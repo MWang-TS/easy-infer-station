@@ -1,0 +1,45 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  release-windows:
+    name: Build & publish Windows release
+    runs-on: windows-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust build cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: './src-tauri -> target'
+
+      - name: Build and publish release
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tagName: ${{ github.ref_name }}
+          releaseName: 'Easy Infer Station ${{ github.ref_name }}'
+          releaseBody: |
+            See [CHANGELOG.md](https://github.com/${{ github.repository }}/blob/main/CHANGELOG.md) for details.
+          releaseDraft: false
+          prerelease: false
