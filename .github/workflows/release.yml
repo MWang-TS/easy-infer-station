@@ -18,35 +18,20 @@ jobs:
           # ── Windows ──────────────────────────────────────
           - label: Windows x86_64
             platform: windows-latest
-            rust_target: x86_64-pc-windows-msvc
-            args: '--target x86_64-pc-windows-msvc'
-
-          - label: Windows ARM64
-            platform: windows-latest
-            rust_target: aarch64-pc-windows-msvc
-            args: '--target aarch64-pc-windows-msvc'
 
           # ── macOS ─────────────────────────────────────────
           - label: macOS Apple Silicon
             platform: macos-latest
-            rust_target: aarch64-apple-darwin
-            args: '--target aarch64-apple-darwin'
 
           - label: macOS Intel x86_64
             platform: macos-13
-            rust_target: x86_64-apple-darwin
-            args: '--target x86_64-apple-darwin'
 
           # ── Linux ─────────────────────────────────────────
           - label: Linux x86_64
             platform: ubuntu-22.04
-            rust_target: x86_64-unknown-linux-gnu
-            args: ''
 
           - label: Linux ARM64
             platform: ubuntu-22.04-arm
-            rust_target: aarch64-unknown-linux-gnu
-            args: ''
 
     runs-on: ${{ matrix.platform }}
 
@@ -61,12 +46,14 @@ jobs:
             libwebkit2gtk-4.1-dev \
             libappindicator3-dev \
             librsvg2-dev \
-            patchelf
+            patchelf \
+            pkg-config \
+            libssl-dev
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '22'
           cache: 'npm'
 
       - name: Install frontend dependencies
@@ -74,8 +61,6 @@ jobs:
 
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.rust_target }}
 
       - name: Rust build cache
         uses: swatinem/rust-cache@v2
@@ -93,4 +78,4 @@ jobs:
             See [CHANGELOG.md](https://github.com/${{ github.repository }}/blob/main/CHANGELOG.md) for details.
           releaseDraft: false
           prerelease: false
-          args: ${{ matrix.args }}
+
