@@ -23,9 +23,6 @@ jobs:
           - label: macOS Apple Silicon
             platform: macos-latest
 
-          - label: macOS Intel x86_64
-            platform: macos-13
-
           # ── Linux ─────────────────────────────────────────
           - label: Linux x86_64
             platform: ubuntu-22.04
