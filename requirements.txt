@@ -1,0 +1,16 @@
+Flask==3.0.0
+Flask-SocketIO==5.3.6
+Flask-Cors>=4.0.0
+werkzeug>=3.0.0
+simple-websocket>=1.0.0
+websocket-client>=1.7.0
+gevent>=23.9.0
+gevent-websocket>=0.10.1
+ultralytics==8.2.89
+Pillow==10.4.0
+PyYAML==6.0.1
+python-dotenv==1.0.0
+opencv-python==4.10.0.84
+torch>=2.0.0
+torchvision>=0.15.0
+numpy>=1.24.0
