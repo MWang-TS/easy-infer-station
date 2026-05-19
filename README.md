@@ -153,3 +153,24 @@ pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
 **Q：自定义模型加载失败？**  
 确认模型为 Ultralytics YOLO 格式的 `.pt` 文件，且环境中的 `ultralytics` 版本与训练时一致。
 
+---
+
+## 开源协议
+
+本项目基于 **GNU Affero General Public License v3.0 (AGPL-3.0)** 发布。
+
+本项目使用了以下开源库，在此表示感谢：
+
+| 库 | 协议 | 用途 |
+|----|------|------|
+| [Ultralytics YOLO](https://github.com/ultralytics/ultralytics) | AGPL-3.0 | 目标检测 / 姿态估计推理引擎 |
+| [Tauri](https://github.com/tauri-apps/tauri) | MIT / Apache-2.0 | 桌面应用框架 |
+| [React](https://github.com/facebook/react) | MIT | 前端 UI 框架 |
+| [Flask](https://github.com/pallets/flask) | BSD-3-Clause | Python 后端 Web 服务 |
+| [Flask-SocketIO](https://github.com/miguelgrinberg/Flask-SocketIO) | MIT | WebSocket 实时通信 |
+| [OpenCV](https://github.com/opencv/opencv-python) | Apache-2.0 | 图像处理 |
+| [PyTorch](https://github.com/pytorch/pytorch) | BSD-3-Clause | 深度学习框架 |
+
+> 由于依赖 Ultralytics（AGPL-3.0），本项目整体须遵循 AGPL-3.0 协议。  
+> 如需商业闭源使用，请参考 [Ultralytics 商业授权](https://www.ultralytics.com/license)。
+
