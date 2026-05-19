@@ -40,45 +40,95 @@
 
 ## 前置要求：Python 环境
 
-Easy Infer Station 的推理引擎由 Python 驱动，需要提前准备好 Python 环境。
+Easy Infer Station 的推理引擎由 Python 驱动，**首次使用前必须按以下步骤配置好 Python 环境**，之后每次启动无需重复操作。
 
-### 第一步：安装 Anaconda 或 Miniconda
+---
 
-如果尚未安装，请从 [Miniconda 官网](https://docs.conda.io/en/latest/miniconda.html) 下载安装（推荐 Miniconda，体积更小）。
+### 第一步：安装 Miniconda
 
-### 第二步：创建专用环境
+Miniconda 是轻量级的 Python 环境管理工具，用于隔离不同项目的依赖。
 
-打开终端（Windows 使用 Anaconda Prompt），执行：
+| 系统 | 下载地址 |
+|------|----------|
+| Windows | [Miniconda3-latest-Windows-x86_64.exe](https://repo.anaconda.com/miniconda/Miniconda3-latest-Windows-x86_64.exe) |
+| macOS（Apple Silicon）| [Miniconda3-latest-MacOSX-arm64.sh](https://repo.anaconda.com/miniconda/Miniconda3-latest-MacOSX-arm64.sh) |
+| macOS（Intel）| [Miniconda3-latest-MacOSX-x86_64.sh](https://repo.anaconda.com/miniconda/Miniconda3-latest-MacOSX-x86_64.sh) |
+| Linux x64 | [Miniconda3-latest-Linux-x86_64.sh](https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh) |
+
+**Windows**：下载后双击 `.exe` 安装，安装完成后从开始菜单打开 **Anaconda Prompt**（不要用普通 PowerShell）。
+
+**macOS / Linux**：下载后在终端执行：
+```bash
+bash Miniconda3-latest-*.sh
+```
+按提示完成安装，关闭并重新打开终端。
+
+验证安装成功：
+```bash
+conda --version
+# 输出类似：conda 24.x.x
+```
+
+---
+
+### 第二步：创建专用 conda 环境
+
+在 **Anaconda Prompt**（Windows）或终端（macOS / Linux）中执行：
 
 ```bash
 conda create -n yolo-infer python=3.10 -y
+```
+
+激活环境：
+```bash
 conda activate yolo-infer
 ```
 
+激活成功后，命令行前缀会变为 `(yolo-infer)`。
+
+---
+
 ### 第三步：安装依赖包
 
-根据是否有 NVIDIA 显卡选择对应命令：
+**先确认当前处于 `(yolo-infer)` 环境中**，然后根据是否有 NVIDIA 显卡选择对应命令：
 
-**无 GPU / 不确定（CPU 推理）**
+#### 方案 A：无 GPU（CPU 推理，适合所有设备）
 
 ```bash
-pip install flask flask-socketio flask-cors werkzeug simple-websocket \
-    gevent gevent-websocket ultralytics pillow pyyaml \
-    python-dotenv opencv-python numpy torch torchvision
+pip install flask==3.0.0 flask-socketio==5.3.6 flask-cors werkzeug \
+    simple-websocket websocket-client \
+    gevent gevent-websocket \
+    ultralytics==8.2.89 \
+    pillow==10.4.0 pyyaml==6.0.1 python-dotenv \
+    opencv-python==4.10.0.84 numpy \
+    torch torchvision
 ```
 
-**有 NVIDIA 显卡（GPU 加速推理）**
+#### 方案 B：有 NVIDIA 显卡（GPU 加速推理，速度更快）
 
-访问 [pytorch.org](https://pytorch.org/get-started/locally/) 选择对应 CUDA 版本，或直接使用 CUDA 12.x：
+先安装 GPU 版 PyTorch（以 CUDA 12.1 为例，[点此查询你的显卡驱动支持的 CUDA 版本](https://pytorch.org/get-started/locally/)）：
 
 ```bash
-pip install flask flask-socketio flask-cors werkzeug simple-websocket \
-    gevent gevent-websocket ultralytics pillow pyyaml \
-    python-dotenv opencv-python numpy
 pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
 ```
 
-> 如果已有包含 PyTorch + Ultralytics 的 conda 环境，可跳过此步骤，首次启动时直接选择该环境即可。
+再安装其他依赖：
+```bash
+pip install flask==3.0.0 flask-socketio==5.3.6 flask-cors werkzeug \
+    simple-websocket websocket-client \
+    gevent gevent-websocket \
+    ultralytics==8.2.89 \
+    pillow==10.4.0 pyyaml==6.0.1 python-dotenv \
+    opencv-python==4.10.0.84 numpy
+```
+
+安装完成后验证：
+```bash
+python -c "import torch; print('PyTorch:', torch.__version__); print('CUDA 可用:', torch.cuda.is_available())"
+python -c "from ultralytics import YOLO; print('ultralytics 已就绪')"
+```
+
+> **提示**：如果已有包含 PyTorch + ultralytics 的旧 conda 环境，可直接在首次启动时选择该环境，跳过以上步骤。
 
 ---
 
