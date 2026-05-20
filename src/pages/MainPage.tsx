@@ -114,7 +114,7 @@ function TopBar({
             Easy Infer Station
           </span>
           <span className="text-xs px-1.5 py-0.5 rounded" style={{ background: "hsl(var(--muted))", color: "hsl(var(--muted-foreground))" }}>
-            v0.0.1
+            v0.0.2
           </span>
         </div>
 
