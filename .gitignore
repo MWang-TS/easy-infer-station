@@ -57,6 +57,9 @@ static/alarmimage/*
 *.log
 logs/
 
+# Documentation (local only)
+doc/
+
 # OS
 .DS_Store
 Thumbs.db
