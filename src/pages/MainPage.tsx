@@ -156,9 +156,13 @@ function TopBar({
 
         {/* Socket 状态 */}
         {socketConnected ? (
-          <Wifi className="w-4 h-4" style={{ color: "hsl(var(--success))" }} title="WebSocket 已连接：可实时接收推理帧与日志" />
+          <span title="WebSocket 已连接：可实时接收推理帧与日志">
+            <Wifi className="w-4 h-4" style={{ color: "hsl(var(--success))" }} />
+          </span>
         ) : (
-          <WifiOff className="w-4 h-4" style={{ color: "hsl(var(--muted-foreground))" }} title="WebSocket 未连接：等待后端启动" />
+          <span title="WebSocket 未连接：等待后端启动">
+            <WifiOff className="w-4 h-4" style={{ color: "hsl(var(--muted-foreground))" }} />
+          </span>
         )}
 
         {/* 刷新按钮 */}
