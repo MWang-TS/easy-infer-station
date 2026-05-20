@@ -96,3 +96,16 @@ export function checkBackendAlive(): Promise<boolean> {
 export function getBackendLog(): Promise<string> {
   return invoke<string>("get_backend_log");
 }
+
+export interface UpdateInfo {
+  has_update: boolean;
+  latest_version: string;
+  current_version: string;
+  release_notes: string;
+  release_url: string;
+}
+
+/** 检查 GitHub Releases 是否有新版本 */
+export async function checkForUpdates(): Promise<UpdateInfo> {
+  return invoke<UpdateInfo>("check_for_updates");
+}

@@ -15,7 +15,13 @@ import {
   Monitor,
   Activity,
   RefreshCw,
+  ArrowDownToLine,
+  CheckCircle2,
+  X,
+  Coffee,
 } from "lucide-react";
+import alipayQR from "@/assets/alipay_qr.png";
+import wechatpayQR from "@/assets/wechat_qr.png";
 import { cn } from "@/lib/utils";
 import { useAppStore } from "@/lib/store";
 import {
@@ -27,8 +33,11 @@ import {
   getBackendClientConfig,
   browseFile,
   browseModelFile,
+  checkForUpdates,
   type BackendStatus,
+  type UpdateInfo,
 } from "@/lib/tauri-bridge";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import {
   initSocket,
   disconnectSocket,
@@ -51,6 +60,15 @@ function TopBar({
     useAppStore();
   const [refreshing, setRefreshing] = useState(false);
 
+  // 更新检查状态
+  const [checking, setChecking] = useState(false);
+  const [updateInfo, setUpdateInfo] = useState<UpdateInfo | null>(null);
+  const [updateError, setUpdateError] = useState<string | null>(null);
+  const [showUpdateModal, setShowUpdateModal] = useState(false);
+
+  // 打赏弹窗
+  const [showDonateModal, setShowDonateModal] = useState(false);
+
   const handleRefresh = async () => {
     setRefreshing(true);
     await onRefresh();
@@ -63,95 +81,364 @@ function TopBar({
     }
   };
 
+  const handleCheckUpdate = async () => {
+    setChecking(true);
+    setUpdateError(null);
+    try {
+      const info = await checkForUpdates();
+      setUpdateInfo(info);
+      setShowUpdateModal(true);
+    } catch (e) {
+      setUpdateError(String(e));
+      setShowUpdateModal(true);
+    } finally {
+      setChecking(false);
+    }
+  };
+
+  const handleDownload = () => {
+    if (updateInfo?.release_url) {
+      openUrl(updateInfo.release_url).catch(() => {});
+    }
+  };
+
   return (
-    <div
-      className="flex items-center px-4 h-11 gap-4 flex-shrink-0"
-      style={{ background: "hsl(var(--card))", borderBottom: "1px solid hsl(var(--border))" }}
-    >
-      <div className="flex items-center gap-2">
-        <Cpu className="w-4 h-4" style={{ color: "hsl(var(--primary))" }} />
-        <span className="font-semibold text-sm" style={{ color: "hsl(var(--foreground))" }}>
-          Easy Infer Station
-        </span>
-        <span className="text-xs px-1.5 py-0.5 rounded" style={{ background: "hsl(var(--muted))", color: "hsl(var(--muted-foreground))" }}>
-          v0.0.1
-        </span>
+    <>
+      <div
+        className="flex items-center px-4 h-11 gap-4 flex-shrink-0"
+        style={{ background: "hsl(var(--card))", borderBottom: "1px solid hsl(var(--border))" }}
+      >
+        <div className="flex items-center gap-2">
+          <Cpu className="w-4 h-4" style={{ color: "hsl(var(--primary))" }} />
+          <span className="font-semibold text-sm" style={{ color: "hsl(var(--foreground))" }}>
+            Easy Infer Station
+          </span>
+          <span className="text-xs px-1.5 py-0.5 rounded" style={{ background: "hsl(var(--muted))", color: "hsl(var(--muted-foreground))" }}>
+            v0.0.1
+          </span>
+        </div>
+
+        <div className="flex-1" />
+
+        {/* GPU 信息 */}
+        {systemInfo?.has_gpu && (
+          <div className="flex items-center gap-1 text-xs" style={{ color: "hsl(var(--muted-foreground))" }}>
+            <Monitor className="w-3.5 h-3.5" />
+            <span>{systemInfo.gpu_name}</span>
+          </div>
+        )}
+
+        {/* 后端状态 */}
+        <div className="flex items-center gap-1.5 text-xs">
+          <div
+            className={cn("w-2 h-2 rounded-full", backendStatus === "running" ? "animate-pulse" : "")}
+            style={{
+              background:
+                backendStatus === "running"
+                  ? "hsl(var(--success))"
+                  : backendStatus === "starting"
+                  ? "hsl(var(--warning))"
+                  : backendStatus === "error"
+                  ? "hsl(var(--destructive))"
+                  : "hsl(var(--border))",
+            }}
+          />
+          <span style={{ color: "hsl(var(--muted-foreground))" }}>
+            {backendStatus === "running"
+              ? "后端运行中"
+              : backendStatus === "starting"
+              ? "启动中..."
+              : backendStatus === "error"
+              ? backendMessage || "后端错误"
+              : "后端未启动"}
+          </span>
+        </div>
+
+        {/* Socket 状态 */}
+        {socketConnected ? (
+          <Wifi className="w-4 h-4" style={{ color: "hsl(var(--success))" }} title="WebSocket 已连接：可实时接收推理帧与日志" />
+        ) : (
+          <WifiOff className="w-4 h-4" style={{ color: "hsl(var(--muted-foreground))" }} title="WebSocket 未连接：等待后端启动" />
+        )}
+
+        {/* 刷新按钮 */}
+        <button
+          onClick={handleRefresh}
+          disabled={refreshing}
+          className="p-1.5 rounded-md transition-opacity hover:opacity-70 disabled:opacity-40"
+          style={{ color: "hsl(var(--muted-foreground))" }}
+          title="刷新连接 / 重新加载模型列表"
+        >
+          <RefreshCw className={cn("w-4 h-4", refreshing && "animate-spin")} />
+        </button>
+
+        {/* 检查更新按钮 */}
+        <button
+          onClick={handleCheckUpdate}
+          disabled={checking}
+          className="p-1.5 rounded-md transition-opacity hover:opacity-70 disabled:opacity-40"
+          style={{ color: "hsl(var(--muted-foreground))" }}
+          title="检查更新"
+        >
+          <ArrowDownToLine className={cn("w-4 h-4", checking && "animate-bounce")} />
+        </button>
+
+        {/* Buy me a coffee */}
+        <button
+          onClick={() => setShowDonateModal(true)}
+          className="p-1.5 rounded-md transition-opacity hover:opacity-70"
+          style={{ color: "hsl(var(--muted-foreground))" }}
+          title="请作者喝杯咖啡"
+        >
+          <Coffee className="w-4 h-4" />
+        </button>
+
+        {/* 设置按钮 */}
+        <button
+          onClick={onOpenEnvManager}
+          className="p-1.5 rounded-md transition-opacity hover:opacity-70"
+          style={{ color: "hsl(var(--muted-foreground))" }}
+          title="环境管理"
+        >
+          <Settings className="w-4 h-4" />
+        </button>
+
+        {/* 重新配置 */}
+        <button
+          onClick={handleReconfigure}
+          className="p-1.5 rounded-md transition-opacity hover:opacity-70 text-xs"
+          style={{ color: "hsl(var(--muted-foreground))" }}
+          title="重新配置（返回设置向导）"
+        >
+          重置
+        </button>
       </div>
 
-      <div className="flex-1" />
+      {/* 打赏弹窗 */}
+      {showDonateModal && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center"
+          style={{ background: "rgba(0,0,0,0.6)" }}
+          onClick={() => setShowDonateModal(false)}
+        >
+          <div
+            className="relative rounded-2xl shadow-2xl p-8"
+            style={{
+              background: "hsl(var(--card))",
+              border: "1px solid hsl(var(--border))",
+              maxWidth: "90vw",
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            {/* 关闭 */}
+            <button
+              onClick={() => setShowDonateModal(false)}
+              className="absolute top-3 right-3 p-1 rounded-md hover:opacity-70 transition-opacity"
+              style={{ color: "hsl(var(--muted-foreground))" }}
+            >
+              <X className="w-4 h-4" />
+            </button>
 
-      {/* GPU 信息 */}
-      {systemInfo?.has_gpu && (
-        <div className="flex items-center gap-1 text-xs" style={{ color: "hsl(var(--muted-foreground))" }}>
-          <Monitor className="w-3.5 h-3.5" />
-          <span>{systemInfo.gpu_name}</span>
+            {/* 标题 */}
+            <div className="flex items-center justify-center gap-2 mb-6">
+              <Coffee className="w-5 h-5" style={{ color: "#c8813a" }} />
+              <span className="font-semibold text-base" style={{ color: "hsl(var(--foreground))" }}>
+                请作者喝杯咖啡
+              </span>
+              <Coffee className="w-5 h-5" style={{ color: "#c8813a" }} />
+            </div>
+
+            {/* 卡片区 */}
+            <div className="flex gap-4">
+              {/* 支付宝卡 */}
+              <div
+                className="flex flex-col items-center rounded-xl overflow-hidden"
+                style={{
+                  width: 192,
+                  border: "2px solid #1677ff",
+                  background: "hsl(var(--background))",
+                }}
+              >
+                {/* 卡头 */}
+                <div
+                  className="w-full flex items-center justify-center gap-1.5 py-2.5"
+                  style={{ background: "#1677ff" }}
+                >
+                  <svg viewBox="0 0 24 24" width="16" height="16" fill="white">
+                    <path d="M21.422 13.346c.307.127.578.32.795.566L22.5 14.5c0 2.485-4.701 4.5-10.5 4.5S1.5 16.985 1.5 14.5c0-.234.023-.463.068-.688.51.19 1.078.359 1.693.505.068.016.136.033.206.049l.101.022c.67.142 1.385.26 2.132.353.1.013.2.024.3.036.3.034.605.064.912.09l.195.016c.42.03.843.053 1.268.067l.206.006C8.918 14.987 9.463 15 10.012 15a37.2 37.2 0 0 0 1.476-.034l.207-.009a31.65 31.65 0 0 0 1.267-.092l.195-.018a28.1 28.1 0 0 0 .9-.1l.3-.04a26.9 26.9 0 0 0 1.98-.338l.19-.043c.665-.161 1.275-.346 1.818-.552zm-9.41-9.845A6.014 6.014 0 0 1 18 9.5c0 .518-.066 1.02-.19 1.5a55.3 55.3 0 0 1-1.598.246 29.3 29.3 0 0 1-2.037.19 35.5 35.5 0 0 1-1.178.051L12.75 11.5H12c-.57 0-1.135-.015-1.69-.044l-.209-.012a31.1 31.1 0 0 1-1.178-.097 26.5 26.5 0 0 1-1.997-.3A30 30 0 0 1 5.37 10.8a6.012 6.012 0 0 1-.359-1.26l-.005-.04H5A6 6 0 0 1 12.012 3.5zm0 1.5a4.5 4.5 0 1 0 0 9 4.5 4.5 0 0 0 0-9z"/>
+                  </svg>
+                  <span className="text-sm font-semibold text-white">支付宝</span>
+                </div>
+                {/* 二维码 */}
+                <div className="p-3">
+                  <img
+                    src={alipayQR}
+                    alt="支付宝收款码"
+                    style={{ width: 160, height: 160, display: "block" }}
+                    draggable={false}
+                  />
+                </div>
+                {/* 底部提示 */}
+                <div
+                  className="w-full text-center py-2 text-xs"
+                  style={{ color: "#1677ff", borderTop: "1px solid #e0eeff" }}
+                >
+                  扫码即可支付
+                </div>
+              </div>
+
+              {/* 微信卡 */}
+              <div
+                className="flex flex-col items-center rounded-xl overflow-hidden"
+                style={{
+                  width: 192,
+                  border: "2px solid #07c160",
+                  background: "hsl(var(--background))",
+                }}
+              >
+                {/* 卡头 */}
+                <div
+                  className="w-full flex items-center justify-center gap-1.5 py-2.5"
+                  style={{ background: "#07c160" }}
+                >
+                  <svg viewBox="0 0 24 24" width="16" height="16" fill="white">
+                    <path d="M8.691 2.188C3.891 2.188 0 5.476 0 9.53c0 2.212 1.17 4.203 3.002 5.55a.59.59 0 0 1 .213.665l-.39 1.48c-.019.07-.048.141-.048.213 0 .163.13.295.295.295a.326.326 0 0 0 .167-.054l1.903-1.114a.864.864 0 0 1 .717-.098 10.16 10.16 0 0 0 2.837.403c.276 0 .543-.027.81-.05-.857-2.578.157-4.972 1.932-6.446 1.703-1.415 3.882-1.98 5.853-1.838-.576-3.583-4.196-6.348-8.6-6.348zM5.785 5.991c.642 0 1.162.529 1.162 1.18a1.17 1.17 0 0 1-1.162 1.178A1.17 1.17 0 0 1 4.623 7.17c0-.651.52-1.18 1.162-1.18zm5.813 0c.642 0 1.162.529 1.162 1.18a1.17 1.17 0 0 1-1.162 1.178 1.17 1.17 0 0 1-1.162-1.178c0-.651.52-1.18 1.162-1.18zm5.34 2.867c-1.797-.052-3.746.512-5.28 1.786-1.72 1.428-2.687 3.72-1.78 6.22.942 2.453 3.666 4.229 6.884 4.229.826 0 1.622-.12 2.361-.336a.722.722 0 0 1 .598.082l1.584.926a.272.272 0 0 0 .14.047c.134 0 .24-.111.24-.247 0-.06-.023-.12-.038-.177l-.327-1.233a.582.582 0 0 1-.023-.156.49.49 0 0 1 .201-.398C23.024 18.48 24 16.82 24 14.98c0-3.21-2.931-5.837-7.062-6.122zm-3.518 3.187c.535 0 .969.44.969.983a.976.976 0 0 1-.969.983.976.976 0 0 1-.969-.983c0-.542.434-.983.969-.983zm4.728 0c.535 0 .969.44.969.983a.976.976 0 0 1-.969.983.976.976 0 0 1-.969-.983c0-.542.434-.983.969-.983z"/>
+                  </svg>
+                  <span className="text-sm font-semibold text-white">微信支付</span>
+                </div>
+                {/* 二维码 */}
+                <div className="p-3">
+                  <img
+                    src={wechatpayQR}
+                    alt="微信收款码"
+                    style={{ width: 160, height: 160, display: "block" }}
+                    draggable={false}
+                  />
+                </div>
+                {/* 底部提示 */}
+                <div
+                  className="w-full text-center py-2 text-xs"
+                  style={{ color: "#07c160", borderTop: "1px solid #d9f5e8" }}
+                >
+                  扫码即可支付
+                </div>
+              </div>
+            </div>
+
+            <p className="text-center text-xs mt-5" style={{ color: "hsl(var(--muted-foreground))" }}>
+              您的支持是持续开发的动力 ❤️
+            </p>
+          </div>
         </div>
       )}
 
-      {/* 后端状态 */}
-      <div className="flex items-center gap-1.5 text-xs">
+      {/* 更新弹窗 */}
+      {showUpdateModal && (
         <div
-          className={cn("w-2 h-2 rounded-full", backendStatus === "running" ? "animate-pulse" : "")}
-          style={{
-            background:
-              backendStatus === "running"
-                ? "hsl(var(--success))"
-                : backendStatus === "starting"
-                ? "hsl(var(--warning))"
-                : backendStatus === "error"
-                ? "hsl(var(--destructive))"
-                : "hsl(var(--border))",
-          }}
-        />
-        <span style={{ color: "hsl(var(--muted-foreground))" }}>
-          {backendStatus === "running"
-            ? "后端运行中"
-            : backendStatus === "starting"
-            ? "启动中..."
-            : backendStatus === "error"
-            ? backendMessage || "后端错误"
-            : "后端未启动"}
-        </span>
-      </div>
+          className="fixed inset-0 z-50 flex items-center justify-center"
+          style={{ background: "rgba(0,0,0,0.5)" }}
+          onClick={() => setShowUpdateModal(false)}
+        >
+          <div
+            className="relative w-[480px] max-w-[90vw] rounded-xl shadow-2xl p-6"
+            style={{ background: "hsl(var(--card))", border: "1px solid hsl(var(--border))" }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            {/* 关闭按钮 */}
+            <button
+              onClick={() => setShowUpdateModal(false)}
+              className="absolute top-3 right-3 p-1 rounded-md hover:opacity-70 transition-opacity"
+              style={{ color: "hsl(var(--muted-foreground))" }}
+            >
+              <X className="w-4 h-4" />
+            </button>
 
-      {/* Socket 状态 */}
-      {socketConnected ? (
-        <Wifi className="w-4 h-4" style={{ color: "hsl(var(--success))" }} />
-      ) : (
-        <WifiOff className="w-4 h-4" style={{ color: "hsl(var(--muted-foreground))" }} />
+            {updateError ? (
+              /* 检查失败 */
+              <>
+                <div className="flex items-center gap-2 mb-3">
+                  <span className="font-semibold text-sm" style={{ color: "hsl(var(--foreground))" }}>
+                    检查更新失败
+                  </span>
+                </div>
+                <p className="text-xs rounded-md p-3" style={{ background: "hsl(var(--muted))", color: "hsl(var(--muted-foreground))" }}>
+                  {updateError}
+                </p>
+                <div className="flex justify-end mt-4">
+                  <button
+                    onClick={() => setShowUpdateModal(false)}
+                    className="px-4 py-1.5 rounded-md text-sm transition-opacity hover:opacity-80"
+                    style={{ background: "hsl(var(--muted))", color: "hsl(var(--foreground))" }}
+                  >
+                    关闭
+                  </button>
+                </div>
+              </>
+            ) : updateInfo?.has_update ? (
+              /* 有新版本 */
+              <>
+                <div className="flex items-center gap-2 mb-1">
+                  <ArrowDownToLine className="w-5 h-5" style={{ color: "hsl(var(--primary))" }} />
+                  <span className="font-semibold text-base" style={{ color: "hsl(var(--foreground))" }}>
+                    发现新版本 v{updateInfo.latest_version}
+                  </span>
+                </div>
+                <p className="text-xs mb-4" style={{ color: "hsl(var(--muted-foreground))" }}>
+                  当前版本：v{updateInfo.current_version}
+                </p>
+                {updateInfo.release_notes && (
+                  <div
+                    className="rounded-md p-3 mb-4 text-xs max-h-48 overflow-y-auto whitespace-pre-wrap"
+                    style={{ background: "hsl(var(--muted))", color: "hsl(var(--muted-foreground))" }}
+                  >
+                    {updateInfo.release_notes}
+                  </div>
+                )}
+                <div className="flex justify-end gap-2">
+                  <button
+                    onClick={() => setShowUpdateModal(false)}
+                    className="px-4 py-1.5 rounded-md text-sm transition-opacity hover:opacity-80"
+                    style={{ background: "hsl(var(--muted))", color: "hsl(var(--foreground))" }}
+                  >
+                    稍后再说
+                  </button>
+                  <button
+                    onClick={handleDownload}
+                    className="px-4 py-1.5 rounded-md text-sm font-medium transition-opacity hover:opacity-80 flex items-center gap-1.5"
+                    style={{ background: "hsl(var(--primary))", color: "hsl(var(--primary-foreground))" }}
+                  >
+                    <ArrowDownToLine className="w-3.5 h-3.5" />
+                    前往下载
+                  </button>
+                </div>
+              </>
+            ) : (
+              /* 已是最新 */
+              <>
+                <div className="flex items-center gap-2 mb-2">
+                  <CheckCircle2 className="w-5 h-5" style={{ color: "hsl(var(--success))" }} />
+                  <span className="font-semibold text-base" style={{ color: "hsl(var(--foreground))" }}>
+                    已是最新版本
+                  </span>
+                </div>
+                <p className="text-sm mb-4" style={{ color: "hsl(var(--muted-foreground))" }}>
+                  当前版本 v{updateInfo?.current_version} 已是最新，无需更新。
+                </p>
+                <div className="flex justify-end">
+                  <button
+                    onClick={() => setShowUpdateModal(false)}
+                    className="px-4 py-1.5 rounded-md text-sm transition-opacity hover:opacity-80"
+                    style={{ background: "hsl(var(--muted))", color: "hsl(var(--foreground))" }}
+                  >
+                    关闭
+                  </button>
+                </div>
+              </>
+            )}
+          </div>
+        </div>
       )}
-
-      {/* 刷新按钮 */}
-      <button
-        onClick={handleRefresh}
-        disabled={refreshing}
-        className="p-1.5 rounded-md transition-opacity hover:opacity-70 disabled:opacity-40"
-        style={{ color: "hsl(var(--muted-foreground))" }}
-        title="刷新连接 / 重新加载模型列表"
-      >
-        <RefreshCw className={cn("w-4 h-4", refreshing && "animate-spin")} />
-      </button>
-
-      {/* 设置按钮 */}
-      <button
-        onClick={onOpenEnvManager}
-        className="p-1.5 rounded-md transition-opacity hover:opacity-70"
-        style={{ color: "hsl(var(--muted-foreground))" }}
-        title="环境管理"
-      >
-        <Settings className="w-4 h-4" />
-      </button>
-
-      {/* 重新配置 */}
-      <button
-        onClick={handleReconfigure}
-        className="p-1.5 rounded-md transition-opacity hover:opacity-70 text-xs"
-        style={{ color: "hsl(var(--muted-foreground))" }}
-        title="重新配置（返回设置向导）"
-      >
-        重置
-      </button>
-    </div>
+    </>
   );
 }
 

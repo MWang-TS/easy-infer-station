@@ -21,6 +21,7 @@ pub fn run() {
             backend::backend_health,
             backend::get_backend_client_config,
             backend::get_app_dir,
+            backend::check_for_updates,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

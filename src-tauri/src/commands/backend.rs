@@ -418,6 +418,79 @@ pub fn get_backend_client_config(app_dir: String) -> BackendClientConfig {
     }
 }
 
+// ─── 更新检查 ─────────────────────────────────────────────────
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct UpdateInfo {
+    pub has_update: bool,
+    pub latest_version: String,
+    pub current_version: String,
+    pub release_notes: String,
+    pub release_url: String,
+}
+
+fn parse_semver(v: &str) -> (u32, u32, u32) {
+    let v = v.trim_start_matches('v');
+    let parts: Vec<u32> = v.split('.').filter_map(|s| s.parse().ok()).collect();
+    (
+        parts.first().copied().unwrap_or(0),
+        parts.get(1).copied().unwrap_or(0),
+        parts.get(2).copied().unwrap_or(0),
+    )
+}
+
+/// 检查 GitHub Releases 是否有新版本
+#[tauri::command]
+pub async fn check_for_updates() -> Result<UpdateInfo, String> {
+    const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
+    const API_URL: &str =
+        "https://api.github.com/repos/MWang-TS/easy-infer-station/releases/latest";
+
+    let client = reqwest::Client::builder()
+        .user_agent("easy-infer-station-updater")
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+        .map_err(|e| format!("构建 HTTP 客户端失败: {}", e))?;
+
+    let resp = client
+        .get(API_URL)
+        .send()
+        .await
+        .map_err(|e| format!("网络请求失败，请检查网络连接: {}", e))?;
+
+    if resp.status() == reqwest::StatusCode::NOT_FOUND {
+        return Err("暂无发布版本，请稍后再试".to_string());
+    }
+
+    if !resp.status().is_success() {
+        return Err(format!("GitHub API 返回错误: {}", resp.status()));
+    }
+
+    let json: serde_json::Value = resp
+        .json()
+        .await
+        .map_err(|e| format!("解析响应失败: {}", e))?;
+
+    let tag_name = json["tag_name"].as_str().unwrap_or("").to_string();
+    let release_notes = json["body"].as_str().unwrap_or("").to_string();
+    let release_url = json["html_url"]
+        .as_str()
+        .unwrap_or("https://github.com/MWang-TS/easy-infer-station/releases")
+        .to_string();
+
+    let latest_version = tag_name.trim_start_matches('v').to_string();
+    let has_update =
+        parse_semver(&latest_version) > parse_semver(CURRENT_VERSION);
+
+    Ok(UpdateInfo {
+        has_update,
+        latest_version,
+        current_version: CURRENT_VERSION.to_string(),
+        release_notes,
+        release_url,
+    })
+}
+
 /// 返回 app.py 所在目录
 /// - Debug 构建（tauri dev）：CARGO_MANIFEST_DIR 的父目录（即项目根目录）
 /// - Release 构建：可执行文件旁边的目录
@@ -439,24 +512,14 @@ pub fn get_app_dir(app: tauri::AppHandle) -> Result<String, String> {
             .path()
             .resource_dir()
             .map_err(|e| format!("找不到资源目录: {}", e))?;
+        let runtime_dir = app
+            .path()
+            .app_local_data_dir()
+            .map_err(|e| format!("找不到本地数据目录: {}", e))?
+            .join("backend_runtime");
 
-        // 已打包安装：resource_dir 有 app.py，同步到 backend_runtime 后运行
-        if resource_dir.join("app.py").exists() {
-            let runtime_dir = app
-                .path()
-                .app_local_data_dir()
-                .map_err(|e| format!("找不到本地数据目录: {}", e))?
-                .join("backend_runtime");
-            sync_backend_runtime_dir(&resource_dir, &runtime_dir)?;
-            return Ok(runtime_dir.to_string_lossy().to_string());
-        }
+        sync_backend_runtime_dir(&resource_dir, &runtime_dir)?;
 
-        // 未打包（开发/测试）：回退到源码项目目录
-        let dev_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .parent()
-            .ok_or_else(|| "找不到项目根目录".to_string())?
-            .to_string_lossy()
-            .to_string();
-        Ok(dev_path)
+        Ok(runtime_dir.to_string_lossy().to_string())
     }
 }
