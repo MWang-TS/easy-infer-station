@@ -161,7 +161,7 @@ jobs:
           <head>
             <meta charset="UTF-8">
             <meta name="viewport" content="width=device-width, initial-scale=1">
-            <title>Dr T — Download {tag}</title>
+            <title>Easy Infer Station — Download {tag}</title>
             <style>
               *, *::before, *::after {{ box-sizing: border-box; margin: 0; padding: 0; }}
               :root {{
@@ -316,14 +316,14 @@ jobs:
           </head>
           <body>
             <nav>
-              <span class="logo">Dr T &nbsp;·&nbsp; Downloads</span>
+              <span class="logo">Easy Infer Station &nbsp;·&nbsp; Downloads</span>
               <span class="nav-tag">{tag}</span>
             </nav>
 
             <div class="hero">
-              <p class="hero-eyebrow">AI-Powered Remote Diagnostics</p>
-              <h1>Download <em>Dr T</em></h1>
-              <p>Lightweight AI ops diagnostic desktop tool. SSH remote diagnosis and local mode in one place.</p>
+              <p class="hero-eyebrow">桌面端 YOLO 推理工具</p>
+              <h1>Download <em>Easy Infer Station</em></h1>
+              <p>桌面端 YOLO 目标检测与姿态估计工具，支持图片、视频文件及 RTSP 视频流实时推理。</p>
               <div class="hero-links">
                 <a class="btn-primary" href="https://github.com/{repo}/releases/tag/{tag}" target="_blank">Release Notes</a>
                 <a class="btn-ghost"   href="https://github.com/{repo}" target="_blank">View on GitHub →</a>
@@ -338,7 +338,7 @@ jobs:
             </div>
 
             <footer>
-              <span>© Dr T · <a href="https://github.com/{repo}" target="_blank">github.com/{repo}</a></span>
+              <span>© Easy Infer Station · <a href="https://github.com/{repo}" target="_blank">github.com/{repo}</a></span>
               <span>Updated {now}</span>
             </footer>
           </body>
