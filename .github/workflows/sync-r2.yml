@@ -72,7 +72,8 @@ jobs:
           import os, pathlib, datetime
 
           tag        = os.environ["TAG"]
-          base_url   = os.environ["BASE_URL"].rstrip("/")
+          _raw_url   = os.environ["BASE_URL"].rstrip("/")
+          base_url   = _raw_url if _raw_url.startswith("http") else f"https://{_raw_url}"
           repo       = os.environ["REPO"]
           assets_dir = pathlib.Path("release-assets")
           now        = datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
