@@ -1,6 +1,6 @@
 [package]
 name = "easy-infer-station"
-version = "0.0.2"
+version = "0.0.3"
 description = "Easy Infer Station - YOLO inference desktop application"
 authors = ["EasyOLO"]
 edition = "2021"

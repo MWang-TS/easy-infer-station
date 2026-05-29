@@ -508,10 +508,12 @@ pub fn get_app_dir(app: tauri::AppHandle) -> Result<String, String> {
     }
     #[cfg(not(debug_assertions))]
     {
+        // Tauri 将 "../xxx" 相对路径的资源打包到 resource_dir/_up_/ 下
         let resource_dir = app
             .path()
             .resource_dir()
-            .map_err(|e| format!("找不到资源目录: {}", e))?;
+            .map_err(|e| format!("找不到资源目录: {}", e))?
+            .join("_up_");
         let runtime_dir = app
             .path()
             .app_local_data_dir()

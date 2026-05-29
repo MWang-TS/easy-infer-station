@@ -1,6 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import {
-  Cpu,
   Wifi,
   WifiOff,
   Settings,
@@ -22,6 +21,7 @@ import {
 } from "lucide-react";
 import alipayQR from "@/assets/alipay_qr.png";
 import wechatpayQR from "@/assets/wechat_qr.png";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { cn } from "@/lib/utils";
 import { useAppStore } from "@/lib/store";
 import {
@@ -105,20 +105,26 @@ function TopBar({
   return (
     <>
       <div
-        className="flex items-center px-4 h-11 gap-4 flex-shrink-0"
+        className="flex items-center px-4 h-11 gap-4 flex-shrink-0 select-none"
         style={{ background: "hsl(var(--card))", borderBottom: "1px solid hsl(var(--border))" }}
       >
-        <div className="flex items-center gap-2">
-          <Cpu className="w-4 h-4" style={{ color: "hsl(var(--primary))" }} />
-          <span className="font-semibold text-sm" style={{ color: "hsl(var(--foreground))" }}>
+        <div
+          className="flex items-center gap-2"
+          onMouseDown={(e) => { if (e.buttons === 1) getCurrentWindow().startDragging(); }}
+        >
+          <img src="/app-icon.png" className="w-4 h-4" style={{ imageRendering: "pixelated" }} />
+          <span className="font-semibold text-sm whitespace-nowrap" style={{ color: "hsl(var(--foreground))" }}>
             Easy Infer Station
           </span>
           <span className="text-xs px-1.5 py-0.5 rounded" style={{ background: "hsl(var(--muted))", color: "hsl(var(--muted-foreground))" }}>
-            v0.0.2
+            v0.0.3
           </span>
         </div>
 
-        <div className="flex-1" />
+        <div
+          className="flex-1 h-full"
+          onMouseDown={(e) => { if (e.buttons === 1) getCurrentWindow().startDragging(); }}
+        />
 
         {/* GPU 信息 */}
         {systemInfo?.has_gpu && (
@@ -149,7 +155,7 @@ function TopBar({
               : backendStatus === "starting"
               ? "启动中..."
               : backendStatus === "error"
-              ? backendMessage || "后端错误"
+              ? "后端错误"
               : "后端未启动"}
           </span>
         </div>
@@ -216,6 +222,31 @@ function TopBar({
         >
           重置
         </button>
+
+        {/* 窗口控制按钮 */}
+        <div className="flex items-center ml-2">
+          <button
+            onClick={() => getCurrentWindow().minimize()}
+            className="w-8 h-8 flex items-center justify-center hover:bg-white/10 transition-colors"
+            title="最小化"
+          >
+            <span className="text-xs leading-none" style={{ color: "hsl(var(--muted-foreground))" }}>─</span>
+          </button>
+          <button
+            onClick={() => getCurrentWindow().toggleMaximize()}
+            className="w-8 h-8 flex items-center justify-center hover:bg-white/10 transition-colors"
+            title="最大化 / 还原"
+          >
+            <span className="text-xs leading-none" style={{ color: "hsl(var(--muted-foreground))" }}>□</span>
+          </button>
+          <button
+            onClick={() => getCurrentWindow().close()}
+            className="w-8 h-8 flex items-center justify-center hover:bg-red-500 hover:text-white transition-colors rounded-sm"
+            title="关闭"
+          >
+            <X className="w-3.5 h-3.5" style={{ color: "hsl(var(--muted-foreground))" }} />
+          </button>
+        </div>
       </div>
 
       {/* 打赏弹窗 */}

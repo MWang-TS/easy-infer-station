@@ -254,7 +254,7 @@ export default function EnvManager({ onClose }: EnvManagerProps) {
                 Easy Infer Station
               </p>
               <p className="text-xs" style={{ color: "hsl(var(--muted-foreground))" }}>
-                v0.0.2 · YOLO 推理桌面工具
+                v0.0.3 · YOLO 推理桌面工具
               </p>
             </div>
 
