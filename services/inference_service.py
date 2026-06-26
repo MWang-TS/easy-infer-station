@@ -72,9 +72,21 @@ class InferenceService:
             return
 
         input_path = params.get('input_path', params.get('input_source', ''))
-        if input_type not in ['rtsp'] and not os.path.exists(input_path):
+        if input_type not in ['rtsp', 'images'] and not os.path.exists(input_path):
             self.socketio.emit('inference_error', {'message': '输入文件不存在'})
             return
+
+        if input_type == 'images':
+            raw_paths = params.get('input_paths', [])
+            if not isinstance(raw_paths, list):
+                self.socketio.emit('inference_error', {'message': '参数错误：input_paths 须为列表'})
+                return
+            valid_paths = [p for p in raw_paths if isinstance(p, str) and p.strip()]
+            if not valid_paths:
+                self.socketio.emit('inference_error', {'message': '没有有效的图片路径'})
+                return
+            params = dict(params)
+            params['input_paths'] = valid_paths
 
         self.current_input_type = input_type
         self.is_running = True
@@ -162,6 +174,8 @@ class InferenceService:
             # 根据输入类型执行推理
             if input_type == 'image':
                 self._inference_on_image(params)
+            elif input_type == 'images':
+                self._inference_on_images(params)
             elif input_type == 'video':
                 self._inference_on_video(params)
             elif input_type == 'rtsp':
@@ -268,7 +282,97 @@ class InferenceService:
         
         self.socketio.emit('inference_complete', {'message': '图片推理完成'})
         # is_running 由 _run_inference 的 finally 块统一重置
+    def _inference_on_images(self, params):
+        """批量图片推理"""
+        input_paths = params.get('input_paths', [])
+        confidence = params.get('confidence', 0.5)
+        iou_threshold = params.get('iou', params.get('iou_threshold', 0.45))
+        pose_mode = params.get('pose_mode_enabled', False)
+        selected_labels = params.get('selected_labels', [])
+        roi_enabled = params.get('roi_enabled', False)
+        roi_coords = params.get('roi_coords')
 
+        total = len(input_paths)
+        if total == 0:
+            self.socketio.emit('batch_complete', {'total': 0, 'message': '没有图片需要处理'})
+            return
+
+        self.socketio.emit('inference_status', {'message': f'开始批量推理，共 {total} 张图片...'})
+
+        processed = 0
+        stopped = False
+
+        for idx, input_path in enumerate(input_paths):
+            if not self.is_running:
+                stopped = True
+                break
+
+            filename = os.path.basename(input_path)
+            self.socketio.emit('batch_progress', {
+                'current': idx,
+                'total': total,
+                'filename': filename,
+            })
+
+            if not os.path.exists(input_path):
+                self.socketio.emit('batch_item_result', {
+                    'index': idx, 'total': total,
+                    'filename': filename, 'image': '',
+                    'detection_count': 0, 'error': '文件不存在',
+                })
+                processed += 1
+                continue
+
+            try:
+                if pose_mode:
+                    results = self.model(
+                        input_path, conf=confidence, iou=iou_threshold,
+                        task='pose', device=self._device_str(self.device)
+                    )
+                else:
+                    results = self.model(
+                        input_path, conf=confidence, iou=iou_threshold,
+                        device=self._device_str(self.device)
+                    )
+
+                for result in results:
+                    if not pose_mode and selected_labels and len(result.boxes.cls) > 0:
+                        keep_mask = torch.tensor([int(cls.item()) in selected_labels for cls in result.boxes.cls])
+                        result.boxes = result.boxes[keep_mask]
+
+                    if roi_enabled and roi_coords:
+                        annotated_image, detection_count = self._annotate_with_roi(result, roi_coords)
+                    else:
+                        annotated_image = result.plot()
+                        detection_count = len(result.boxes) if hasattr(result, 'boxes') and result.boxes is not None else 0
+
+                    image_base64 = self._image_to_base64(annotated_image)
+                    self.socketio.emit('batch_item_result', {
+                        'index': idx,
+                        'total': total,
+                        'filename': filename,
+                        'image': image_base64,
+                        'detection_count': detection_count,
+                    })
+                    processed += 1
+            except Exception as e:
+                self.socketio.emit('batch_item_result', {
+                    'index': idx, 'total': total,
+                    'filename': filename, 'image': '',
+                    'detection_count': 0, 'error': str(e),
+                })
+                processed += 1
+
+        if stopped:
+            self.socketio.emit('inference_stopped', {
+                'message': f'批量推理已停止，已处理 {processed}/{total} 张',
+            })
+        else:
+            self.socketio.emit('batch_complete', {
+                'total': total,
+                'processed': processed,
+                'message': f'批量推理完成，共处理 {processed}/{total} 张图片',
+            })
     def _inference_on_video(self, params):
         """视频推理"""
         input_path = params.get('input_path') or params.get('input_source', '')

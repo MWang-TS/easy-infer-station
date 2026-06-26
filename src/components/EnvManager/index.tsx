@@ -254,7 +254,7 @@ export default function EnvManager({ onClose }: EnvManagerProps) {
                 Easy Infer Station
               </p>
               <p className="text-xs" style={{ color: "hsl(var(--muted-foreground))" }}>
-                v0.0.3 · YOLO 推理桌面工具
+                v0.0.4 · YOLO 推理桌面工具
               </p>
             </div>
 
@@ -284,12 +284,12 @@ export default function EnvManager({ onClose }: EnvManagerProps) {
                 联系作者
               </p>
               <button
-                onClick={() => openUrl("mailto:gawain.wang@163.com").catch(() => {})}
+                onClick={() => openUrl("mailto:gawain@tsagent.cc").catch(() => {})}
                 className="flex items-center gap-2 text-xs hover:opacity-70 transition-opacity"
                 style={{ color: "hsl(var(--foreground))" }}
               >
                 <Mail className="w-4 h-4 flex-shrink-0" />
-                <span className="flex-1 text-left">gawain.wang@163.com</span>
+                <span className="flex-1 text-left">gawain@tsagent.cc</span>
               </button>
             </div>
           </div>

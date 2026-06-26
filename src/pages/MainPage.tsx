@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback, useRef, type ReactNode } from "react";
 import {
   Wifi,
   WifiOff,
@@ -18,12 +18,19 @@ import {
   CheckCircle2,
   X,
   Coffee,
+  ChevronLeft,
+  ChevronRight,
+  Maximize2,
+  ScanSearch,
+  ZoomIn,
+  ZoomOut,
 } from "lucide-react";
 import alipayQR from "@/assets/alipay_qr.png";
 import wechatpayQR from "@/assets/wechat_qr.png";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { cn } from "@/lib/utils";
 import { useAppStore } from "@/lib/store";
+import type { BatchResultItem } from "@/lib/store";
 import {
   startBackend,
   stopBackend,
@@ -33,6 +40,7 @@ import {
   getBackendClientConfig,
   browseFile,
   browseModelFile,
+  browseMultipleImageFiles,
   checkForUpdates,
   type BackendStatus,
   type UpdateInfo,
@@ -117,7 +125,7 @@ function TopBar({
             Easy Infer Station
           </span>
           <span className="text-xs px-1.5 py-0.5 rounded" style={{ background: "hsl(var(--muted))", color: "hsl(var(--muted-foreground))" }}>
-            v0.0.3
+            v0.0.4
           </span>
         </div>
 
@@ -481,6 +489,7 @@ function TopBar({
 interface InferParamsState {
   inputType: "image" | "video" | "rtsp";
   inputSource: string;
+  imagePaths: string[];   // 多图模式已选文件（非空时优先用批量模式）
   modelPath: string;
   confidence: number;
   iouThresh: number;
@@ -530,6 +539,7 @@ function ControlPanel({
   width,
   onBrowseFile,
   onBrowseModel,
+  onBrowseMultiple,
   onStartRoiDraw,
   roiDrawMode,
 }: {
@@ -544,6 +554,7 @@ function ControlPanel({
   width: number;
   onBrowseFile: () => void;
   onBrowseModel: () => void;
+  onBrowseMultiple: () => void;
   onStartRoiDraw: () => void;
   roiDrawMode: boolean;
 }) {
@@ -696,7 +707,52 @@ function ControlPanel({
                 color: "hsl(var(--foreground))",
               }}
             />
+          ) : params.inputType === "image" && params.imagePaths.length > 0 ? (
+            /* 多图模式：显示已选文件列表 */
+            <>
+              <div className="flex items-center justify-between mb-1">
+                <span className="text-xs" style={{ color: "hsl(var(--muted-foreground))" }}>
+                  已选 {params.imagePaths.length} 张图片
+                </span>
+                <button
+                  onClick={() => onChange({ imagePaths: [] })}
+                  className="text-xs px-1.5 py-0.5 rounded transition-opacity hover:opacity-70"
+                  style={{ color: "hsl(var(--destructive))", border: "1px solid hsl(var(--border))" }}
+                >
+                  清空
+                </button>
+              </div>
+              <div className="max-h-24 overflow-y-auto space-y-0.5 mb-1">
+                {params.imagePaths.map((p, i) => (
+                  <div
+                    key={i}
+                    className="flex items-center gap-1 text-xs rounded px-1.5 py-0.5"
+                    style={{ background: "hsl(var(--muted))", border: "1px solid hsl(var(--border))" }}
+                  >
+                    <span className="flex-1 truncate" style={{ color: "hsl(var(--foreground))" }}>
+                      {p.split(/[\\/]/).pop()}
+                    </span>
+                    <button
+                      onClick={() => onChange({ imagePaths: params.imagePaths.filter((_, j) => j !== i) })}
+                      className="flex-shrink-0 p-0.5 rounded hover:opacity-70 transition-opacity"
+                      style={{ color: "hsl(var(--muted-foreground))" }}
+                    >
+                      <X className="w-3 h-3" />
+                    </button>
+                  </div>
+                ))}
+              </div>
+              <button
+                onClick={onBrowseMultiple}
+                className="w-full py-1 rounded text-xs flex items-center justify-center gap-1 transition-opacity hover:opacity-70"
+                style={{ background: "hsl(var(--muted))", border: "1px solid hsl(var(--border))", color: "hsl(var(--muted-foreground))" }}
+              >
+                <FolderOpen className="w-3.5 h-3.5" />
+                重新选择
+              </button>
+            </>
           ) : (
+            /* 单文件模式 */
             <div className="flex gap-1">
               <input
                 type="text"
@@ -712,12 +768,22 @@ function ControlPanel({
               />
               <button
                 onClick={onBrowseFile}
-                className="px-2 py-1.5 rounded-r flex items-center transition-opacity hover:opacity-70"
-                style={{ background: "hsl(var(--muted))", border: "1px solid hsl(var(--border))" }}
-                title="浏览"
+                className="px-2 py-1.5 flex items-center transition-opacity hover:opacity-70"
+                style={{ background: "hsl(var(--muted))", border: "1px solid hsl(var(--border))", borderRight: "none" }}
+                title="单选"
               >
                 <FolderOpen className="w-3.5 h-3.5" style={{ color: "hsl(var(--muted-foreground))" }} />
               </button>
+              {params.inputType === "image" && (
+                <button
+                  onClick={onBrowseMultiple}
+                  className="px-2 py-1.5 rounded-r flex items-center transition-opacity hover:opacity-70"
+                  style={{ background: "hsl(var(--muted))", border: "1px solid hsl(var(--border))" }}
+                  title="批量多选图片"
+                >
+                  <span className="text-xs font-medium" style={{ color: "hsl(var(--muted-foreground))" }}>批量</span>
+                </button>
+              )}
             </div>
           )}
         </Section>
@@ -871,12 +937,12 @@ function ControlPanel({
         {!isInferring ? (
           <button
             onClick={onStart}
-            disabled={!backendRunning || !params.modelPath || !params.inputSource}
+            disabled={!backendRunning || !params.modelPath || (params.imagePaths.length > 0 ? false : !params.inputSource)}
             className="w-full flex items-center justify-center gap-2 py-2 rounded-lg text-sm font-medium transition-opacity hover:opacity-80 disabled:opacity-40"
             style={{ background: "hsl(var(--primary))", color: "hsl(var(--primary-foreground))" }}
           >
             <Play className="w-4 h-4" />
-            开始推理
+            {params.imagePaths.length > 0 ? `批量推理 (${params.imagePaths.length}张)` : "开始推理"}
           </button>
         ) : (
           <button
@@ -893,6 +959,418 @@ function ControlPanel({
   );
 }
 
+// ─── 批量推理画廊 ──────────────────────────────────────────────
+function LbBtn({
+  onClick,
+  title,
+  label,
+  active,
+  children,
+}: {
+  onClick: () => void;
+  title: string;
+  label: string;
+  active?: boolean;
+  children: ReactNode;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      title={title}
+      className="flex flex-col items-center gap-0.5 px-2.5 py-1.5 rounded-lg transition-all hover:bg-white/10"
+      style={{
+        background: active ? "rgba(255,255,255,0.2)" : "transparent",
+        color: active ? "white" : "rgba(255,255,255,0.75)",
+        minWidth: "52px",
+      }}
+    >
+      {children}
+      <span style={{ fontSize: "10px" }}>{label}</span>
+    </button>
+  );
+}
+
+function BatchGallery() {
+  const { batchResults, isBatchInferring, batchProgress, clearBatchResults } = useAppStore();
+  const [selectedIdx, setSelectedIdx] = useState<number | null>(null);
+  // 统一用一个对象描述视口状态，方便在事件回调中原子更新
+  const [view, setView] = useState({ scale: 1, offsetX: 0, offsetY: 0, fitMode: true });
+
+  // 拖拽相关 ref（不需要触发重渲染）
+  const isDragging = useRef(false);
+  const dragStart = useRef({ x: 0, y: 0 });
+  const offsetAtDragStart = useRef({ x: 0, y: 0 });
+  // 用 ref 缓存最新 offset，供 mousedown 闭包读取
+  const currentOffset = useRef({ x: 0, y: 0 });
+  currentOffset.current = { x: view.offsetX, y: view.offsetY };
+
+  const containerRef = useRef<HTMLDivElement>(null);
+  const imgRef = useRef<HTMLImageElement>(null);
+
+  const total = batchResults.length;
+  const selected = selectedIdx !== null ? (batchResults[selectedIdx] ?? null) : null;
+
+  const resetView = () => setView({ scale: 1, offsetX: 0, offsetY: 0, fitMode: true });
+
+  const openLightbox = (idx: number) => {
+    setSelectedIdx(idx);
+    resetView();
+    isDragging.current = false;
+  };
+
+  const goPrev = useCallback(() => {
+    setSelectedIdx((i) => i === null ? null : (i - 1 + total) % total);
+    setView({ scale: 1, offsetX: 0, offsetY: 0, fitMode: true });
+    isDragging.current = false;
+  }, [total]);
+
+  const goNext = useCallback(() => {
+    setSelectedIdx((i) => i === null ? null : (i + 1) % total);
+    setView({ scale: 1, offsetX: 0, offsetY: 0, fitMode: true });
+    isDragging.current = false;
+  }, [total]);
+
+  // 键盘快捷键
+  useEffect(() => {
+    if (selectedIdx === null) return;
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        setSelectedIdx(null);
+        isDragging.current = false;
+      } else if (e.key === "ArrowLeft") {
+        setSelectedIdx((i) => i === null ? null : (i - 1 + total) % total);
+        setView({ scale: 1, offsetX: 0, offsetY: 0, fitMode: true });
+        isDragging.current = false;
+      } else if (e.key === "ArrowRight") {
+        setSelectedIdx((i) => i === null ? null : (i + 1) % total);
+        setView({ scale: 1, offsetX: 0, offsetY: 0, fitMode: true });
+        isDragging.current = false;
+      } else if (e.key === "+" || e.key === "=") {
+        setView((v) => ({ ...v, scale: Math.min(v.scale * 1.25, 8), fitMode: false }));
+      } else if (e.key === "-") {
+        setView((v) => ({ ...v, scale: Math.max(v.scale * 0.8, 0.1), fitMode: false }));
+      }
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [selectedIdx, total]);
+
+  // 鼠标滚轮缩放（zoom-to-cursor）
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container || selectedIdx === null) return;
+    const handleWheel = (e: WheelEvent) => {
+      e.preventDefault();
+      const rect = container.getBoundingClientRect();
+      // 鼠标相对容器中心的偏移
+      const mx = e.clientX - rect.left - rect.width / 2;
+      const my = e.clientY - rect.top - rect.height / 2;
+      const factor = e.deltaY < 0 ? 1.1 : 0.9;
+      setView((v) => {
+        const newScale = Math.max(0.1, Math.min(8, v.scale * factor));
+        const ratio = newScale / v.scale;
+        return {
+          scale: newScale,
+          // 保持鼠标下的图像点不动
+          offsetX: mx - ratio * (mx - v.offsetX),
+          offsetY: my - ratio * (my - v.offsetY),
+          fitMode: false,
+        };
+      });
+    };
+    container.addEventListener("wheel", handleWheel, { passive: false });
+    return () => container.removeEventListener("wheel", handleWheel);
+  }, [selectedIdx]);
+
+  // 拖拽：mousedown 挂在容器上，mousemove/mouseup 挂在 window 上防止丢失
+  const handleMouseDown = useCallback((e: React.MouseEvent) => {
+    if (e.button !== 0) return;
+    e.preventDefault();
+    isDragging.current = true;
+    dragStart.current = { x: e.clientX, y: e.clientY };
+    offsetAtDragStart.current = { ...currentOffset.current };
+  }, []);
+
+  useEffect(() => {
+    if (selectedIdx === null) return;
+    const handleMouseMove = (e: MouseEvent) => {
+      if (!isDragging.current) return;
+      setView((v) => ({
+        ...v,
+        offsetX: offsetAtDragStart.current.x + (e.clientX - dragStart.current.x),
+        offsetY: offsetAtDragStart.current.y + (e.clientY - dragStart.current.y),
+        fitMode: false,
+      }));
+    };
+    const handleMouseUp = () => { isDragging.current = false; };
+    window.addEventListener("mousemove", handleMouseMove);
+    window.addEventListener("mouseup", handleMouseUp);
+    return () => {
+      window.removeEventListener("mousemove", handleMouseMove);
+      window.removeEventListener("mouseup", handleMouseUp);
+    };
+  }, [selectedIdx]);
+
+  // 原始大小：计算使图像呈现 1:1 像素所需的 scale
+  const handleOriginalSize = useCallback(() => {
+    const img = imgRef.current;
+    const container = containerRef.current;
+    if (img && container && img.naturalWidth > 0) {
+      const fitScale = Math.min(
+        container.clientWidth / img.naturalWidth,
+        container.clientHeight / img.naturalHeight,
+      );
+      setView({ scale: 1 / fitScale, offsetX: 0, offsetY: 0, fitMode: false });
+    } else {
+      setView({ scale: 1, offsetX: 0, offsetY: 0, fitMode: false });
+    }
+  }, []);
+
+  return (
+    <div className="w-full h-full flex flex-col overflow-hidden">
+      {/* 进度条（推理中） */}
+      {isBatchInferring && batchProgress && (
+        <div
+          className="px-3 py-2 flex-shrink-0"
+          style={{ borderBottom: "1px solid hsl(var(--border))", background: "hsl(var(--card))" }}
+        >
+          <div className="flex items-center justify-between text-xs mb-1.5">
+            <span style={{ color: "hsl(var(--foreground))" }}>
+              批量推理中... ({batchProgress.current}/{batchProgress.total})
+            </span>
+            {batchProgress.filename && (
+              <span className="truncate max-w-[200px]" style={{ color: "hsl(var(--muted-foreground))" }}>
+                {batchProgress.filename}
+              </span>
+            )}
+          </div>
+          <div className="w-full rounded-full h-1.5" style={{ background: "hsl(var(--muted))" }}>
+            <div
+              className="h-1.5 rounded-full transition-all duration-300"
+              style={{
+                background: "hsl(var(--primary))",
+                width: `${batchProgress.total > 0 ? (batchProgress.current / batchProgress.total) * 100 : 0}%`,
+              }}
+            />
+          </div>
+        </div>
+      )}
+
+      {/* 标题栏（完成后） */}
+      {!isBatchInferring && batchResults.length > 0 && (
+        <div
+          className="px-3 py-1.5 flex-shrink-0 flex items-center justify-between"
+          style={{ borderBottom: "1px solid hsl(var(--border))", background: "hsl(var(--card))" }}
+        >
+          <span className="text-xs font-medium" style={{ color: "hsl(var(--foreground))" }}>
+            批量结果 ({batchResults.length} 张)
+          </span>
+          <button
+            onClick={clearBatchResults}
+            className="p-1 rounded transition-opacity hover:opacity-70"
+            style={{ color: "hsl(var(--muted-foreground))" }}
+            title="清空批量结果"
+          >
+            <Trash2 className="w-3.5 h-3.5" />
+          </button>
+        </div>
+      )}
+
+      {/* 画廊网格 */}
+      <div className="flex-1 overflow-y-auto p-2">
+        <div
+          className="grid gap-2"
+          style={{ gridTemplateColumns: "repeat(auto-fill, minmax(150px, 1fr))" }}
+        >
+          {batchResults.map((item, idx) => (
+            <div
+              key={item.id}
+              onClick={() => item.image && openLightbox(idx)}
+              className="rounded-lg overflow-hidden transition-all"
+              style={{
+                border: "1px solid hsl(var(--border))",
+                background: "hsl(var(--card))",
+                cursor: item.image ? "pointer" : "default",
+              }}
+            >
+              <div
+                className="aspect-video overflow-hidden flex items-center justify-center"
+                style={{ background: "hsl(222 47% 8%)" }}
+              >
+                {item.image ? (
+                  <img src={item.image} alt={item.filename} className="w-full h-full object-cover" />
+                ) : (
+                  <span
+                    className="text-xs px-2 text-center line-clamp-3"
+                    style={{ color: "hsl(var(--destructive))" }}
+                    title={item.error}
+                  >
+                    {item.error ?? "推理失败"}
+                  </span>
+                )}
+              </div>
+              <div className="px-2 py-1">
+                <div className="text-xs truncate" style={{ color: "hsl(var(--foreground))" }}>{item.filename}</div>
+                <div className="text-xs" style={{ color: "hsl(var(--muted-foreground))" }}>
+                  {item.detectionCount} 个目标
+                </div>
+              </div>
+            </div>
+          ))}
+
+          {/* 待推理占位卡 */}
+          {isBatchInferring && batchProgress &&
+            Array.from({ length: Math.max(0, batchProgress.total - batchResults.length) }).map((_, i) => (
+              <div
+                key={`pending-${i}`}
+                className="rounded-lg overflow-hidden"
+                style={{ border: "1px solid hsl(var(--border))", background: "hsl(var(--card))" }}
+              >
+                <div
+                  className="aspect-video animate-pulse"
+                  style={{ background: "hsl(var(--muted))" }}
+                />
+                <div className="px-2 py-1 space-y-1">
+                  <div className="h-2.5 rounded" style={{ background: "hsl(var(--muted))", width: "75%" }} />
+                  <div className="h-2 rounded" style={{ background: "hsl(var(--muted))", width: "45%" }} />
+                </div>
+              </div>
+            ))
+          }
+        </div>
+      </div>
+
+      {/* 灯箱大图预览 */}
+      {selected && (
+        <div
+          className="fixed inset-0 z-50 flex flex-col items-center justify-center"
+          style={{ background: "rgba(0,0,0,0.92)" }}
+          onClick={() => { setSelectedIdx(null); isDragging.current = false; }}
+        >
+          {/* 关闭按钮 */}
+          <button
+            onClick={() => { setSelectedIdx(null); isDragging.current = false; }}
+            className="absolute top-4 right-4 p-1.5 rounded-full transition-opacity hover:opacity-80 z-10"
+            style={{ background: "rgba(255,255,255,0.15)", color: "white" }}
+          >
+            <X className="w-4 h-4" />
+          </button>
+
+          {/* 文件名 + 序号 */}
+          <div
+            className="mb-2 text-sm truncate max-w-[80vw] px-4 text-center flex-shrink-0"
+            style={{ color: "rgba(255,255,255,0.8)" }}
+          >
+            {selected.filename}
+            <span className="ml-2 text-xs" style={{ color: "rgba(255,255,255,0.5)" }}>
+              {selected.detectionCount} 个目标
+            </span>
+            <span className="ml-2 text-xs" style={{ color: "rgba(255,255,255,0.35)" }}>
+              {selectedIdx! + 1} / {total}
+            </span>
+          </div>
+
+          {/* 图片容器：overflow hidden + transform 实现缩放平移 */}
+          <div
+            ref={containerRef}
+            className="flex items-center justify-center flex-shrink-0 select-none rounded-lg"
+            style={{
+              width: "88vw",
+              height: "66vh",
+              overflow: "hidden",
+              cursor: "grab",
+            }}
+            onClick={(e) => e.stopPropagation()}
+            onMouseDown={handleMouseDown}
+          >
+            <img
+              ref={imgRef}
+              key={selected.id}
+              src={selected.image}
+              alt={selected.filename}
+              draggable={false}
+              style={{
+                maxWidth: "88vw",
+                maxHeight: "66vh",
+                objectFit: "contain",
+                display: "block",
+                transform: `translate(${view.offsetX}px, ${view.offsetY}px) scale(${view.scale})`,
+                transformOrigin: "center center",
+                userSelect: "none",
+                pointerEvents: "none",
+              }}
+            />
+          </div>
+
+          {/* 工具栏 */}
+          <div
+            className="mt-3 flex items-center flex-shrink-0"
+            style={{
+              background: "rgba(20,20,20,0.88)",
+              backdropFilter: "blur(10px)",
+              borderRadius: "12px",
+              padding: "4px 8px",
+              gap: "2px",
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <LbBtn onClick={goPrev} title="后退 (←)" label="后退">
+              <ChevronLeft className="w-4 h-4" />
+            </LbBtn>
+            <LbBtn onClick={goNext} title="前进 (→)" label="前进">
+              <ChevronRight className="w-4 h-4" />
+            </LbBtn>
+
+            <div style={{ width: 1, height: 32, background: "rgba(255,255,255,0.15)", margin: "0 6px" }} />
+
+            <LbBtn
+              onClick={resetView}
+              title="适合窗口"
+              label="适合窗口"
+              active={view.fitMode}
+            >
+              <Maximize2 className="w-4 h-4" />
+            </LbBtn>
+            <LbBtn
+              onClick={handleOriginalSize}
+              title="原始大小 (1:1)"
+              label="原始大小"
+            >
+              <ScanSearch className="w-4 h-4" />
+            </LbBtn>
+
+            <div style={{ width: 1, height: 32, background: "rgba(255,255,255,0.15)", margin: "0 6px" }} />
+
+            <LbBtn
+              onClick={() => setView((v) => ({ ...v, scale: Math.max(v.scale * 0.8, 0.1), fitMode: false }))}
+              title="缩小 (-)"
+              label="缩小"
+            >
+              <ZoomOut className="w-4 h-4" />
+            </LbBtn>
+            <LbBtn
+              onClick={() => setView((v) => ({ ...v, scale: Math.min(v.scale * 1.25, 8), fitMode: false }))}
+              title="放大 (+)"
+              label="放大"
+            >
+              <ZoomIn className="w-4 h-4" />
+            </LbBtn>
+
+            {!view.fitMode && (
+              <span
+                className="ml-2 text-xs"
+                style={{ color: "rgba(255,255,255,0.5)", minWidth: "40px", textAlign: "center" }}
+              >
+                {Math.round(view.scale * 100)}%
+              </span>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ─── 推理结果展示区 ────────────────────────────────────────────
 function InferenceView({
   logHeight,
@@ -904,6 +1382,7 @@ function InferenceView({
   onRoiDrawModeEnd,
   previewFrame,
   previewLoading,
+  inputType,
 }: {
   logHeight: number;
   onLogDragStart: (e: React.MouseEvent) => void;
@@ -914,8 +1393,9 @@ function InferenceView({
   onRoiDrawModeEnd: () => void;
   previewFrame: string | null;
   previewLoading: boolean;
+  inputType: "image" | "video" | "rtsp";
 }) {
-  const { currentFrame, isInferring, inferLog } = useAppStore();
+  const { currentFrame, isInferring, inferLog, batchResults, isBatchInferring } = useAppStore();
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const drawStateRef = useRef({ active: false, startX: 0, startY: 0 });
   const cbRef = useRef({ onRoiDrawn, onRoiDrawModeEnd });
@@ -1001,7 +1481,12 @@ function InferenceView({
         className="flex-1 flex items-center justify-center relative overflow-hidden"
         style={{ background: "hsl(222 47% 8%)" }}
       >
-        {currentFrame ? (
+        {isBatchInferring || (batchResults.length > 0 && inputType === "image") ? (
+          /* 批量模式：显示画廊（仅 image 模式） */
+          <div className="absolute inset-0">
+            <BatchGallery />
+          </div>
+        ) : currentFrame ? (
           <img
             src={currentFrame}
             alt="inference result"
@@ -1032,8 +1517,8 @@ function InferenceView({
             </div>
           </div>
         )}
-        {/* ROI 画布覆盖层 */}
-        {(roiEnabled || roiDrawMode) && (
+        {/* ROI 画布覆盖层（批量模式下不显示） */}
+        {!isBatchInferring && (batchResults.length === 0 || inputType !== "image") && (roiEnabled || roiDrawMode) && (
           <canvas
             ref={canvasRef}
             style={{
@@ -1224,6 +1709,7 @@ export default function MainPage() {
   const [params, setParams] = useState<InferParamsState>({
     inputType: "image",
     inputSource: "",
+    imagePaths: [],
     modelPath: "",
     confidence: 0.5,
     iouThresh: 0.45,
@@ -1288,7 +1774,14 @@ export default function MainPage() {
   const handleBrowse = async () => {
     const path = await browseFile(params.inputType as "image" | "video");
     if (path)
-      setParams((p) => ({ ...p, inputSource: path, roiCoords: null, roiEnabled: false }));
+      setParams((p) => ({ ...p, inputSource: path, imagePaths: [], roiCoords: null, roiEnabled: false }));
+  };
+
+  const handleBrowseMultiple = async () => {
+    const paths = await browseMultipleImageFiles();
+    if (paths && paths.length > 0) {
+      setParams((p) => ({ ...p, imagePaths: paths, inputSource: "", roiCoords: null, roiEnabled: false }));
+    }
   };
 
   // 防止 React Strict Mode 双重 mount 导致重复启动后端
@@ -1433,6 +1926,10 @@ export default function MainPage() {
         { headers: getAuthHeaders() }
       );
       const data = await resp.json();
+      if (!data.success) {
+        addInferLog(`加载标签失败: ${data.message ?? "未知错误"}`);
+        return; // 不清空已有标签
+      }
       // model.names 返回 dict {0:'person',...}，需要转换为按 id 排序的字符串数组
       const raw: unknown = data.labels ?? [];
       const list: string[] = Array.isArray(raw)
@@ -1443,10 +1940,10 @@ export default function MainPage() {
       setLabels(list);
       // 切换模型时清除已选类别
       setParams((p) => ({ ...p, selectedLabels: [] }));
-    } catch {
-      /* 忽略 */
+    } catch (e) {
+      addInferLog(`加载标签请求失败: ${e}`);
     }
-  }, [apiToken, config, setLabels]);
+  }, [apiToken, config, setLabels, addInferLog]);
 
   useEffect(() => {
     if (params.modelPath) fetchLabels(params.modelPath);
@@ -1515,20 +2012,34 @@ export default function MainPage() {
   };
 
   const handleStart = () => {
-    emitStartInference({
-      input_type: params.inputType,
-      input_source: params.inputSource,
+    const commonParams = {
       model_path: params.modelPath,
       confidence: params.confidence,
       iou: params.iouThresh,
       device: params.device,
-      frame_skip: params.frameSkip,
       selected_labels: params.selectedLabels,
       roi_enabled: params.roiEnabled,
       roi_coords: params.roiCoords,
-      tracking_enabled: params.trackingEnabled,
-      tracker: params.trackerType,
-    });
+    };
+
+    if (params.imagePaths.length > 0) {
+      // 批量多图模式
+      emitStartInference({
+        input_type: "images",
+        input_paths: params.imagePaths,
+        ...commonParams,
+      });
+    } else {
+      // 单输入模式（图片/视频/RTSP）
+      emitStartInference({
+        input_type: params.inputType,
+        input_source: params.inputSource,
+        frame_skip: params.frameSkip,
+        tracking_enabled: params.trackingEnabled,
+        tracker: params.trackerType,
+        ...commonParams,
+      });
+    }
   };
 
   const handleStop = () => {
@@ -1551,6 +2062,14 @@ export default function MainPage() {
                 next.roiEnabled = false;
                 setRoiDrawMode(false);
               }
+              // 切换输入类型时清除多图列表
+              if ("inputType" in p && p.inputType !== prev.inputType) {
+                next.imagePaths = [];
+              }
+              // 清空多图时也清除批量结果
+              if ("imagePaths" in p && (p.imagePaths ?? []).length === 0 && prev.imagePaths.length > 0) {
+                useAppStore.getState().clearBatchResults();
+              }
               return next;
             });
           }}
@@ -1563,6 +2082,7 @@ export default function MainPage() {
           width={sidebarWidth}
           onBrowseFile={handleBrowse}
           onBrowseModel={handleBrowseModel}
+          onBrowseMultiple={handleBrowseMultiple}
           onStartRoiDraw={() => setRoiDrawMode(true)}
           roiDrawMode={roiDrawMode}
         />
@@ -1590,6 +2110,7 @@ export default function MainPage() {
           onRoiDrawModeEnd={() => setRoiDrawMode(false)}
           previewFrame={previewFrame}
           previewLoading={previewLoading}
+          inputType={params.inputType}
         />
 
         {/* 报警面板拖拽把手 */}

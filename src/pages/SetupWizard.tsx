@@ -1,8 +1,9 @@
 import { useState, useEffect } from "react";
-import { Cpu, Search, CheckCircle, XCircle, AlertCircle, ChevronRight, Loader2 } from "lucide-react";
+import { Cpu, Search, CheckCircle, XCircle, AlertCircle, ChevronRight, Loader2, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { listCondaEnvs, getAppDir, type CondaEnv } from "@/lib/tauri-bridge";
 import { useAppStore, type AppConfig } from "@/lib/store";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 
 type Step = "mode" | "conda-select" | "confirm";
 
@@ -54,8 +55,19 @@ export default function SetupWizard() {
   };
 
   return (
-    <div className="min-h-screen flex items-center justify-center p-6"
+    <div className="relative min-h-screen flex items-center justify-center p-6"
       style={{ background: "hsl(var(--background))" }}>
+
+      {/* 关闭按钮 */}
+      <button
+        onClick={() => getCurrentWindow().close()}
+        className="absolute top-4 right-4 p-1.5 rounded-lg transition-opacity hover:opacity-70"
+        style={{ color: "hsl(var(--muted-foreground))" }}
+        title="退出"
+      >
+        <X className="w-5 h-5" />
+      </button>
+
       <div className="w-full max-w-2xl">
         {/* 标题 */}
         <div className="text-center mb-8">
@@ -66,7 +78,12 @@ export default function SetupWizard() {
           <h1 className="text-2xl font-bold mb-1" style={{ color: "hsl(var(--foreground))" }}>
             Easy Infer Station
           </h1>
-          <p style={{ color: "hsl(var(--muted-foreground))" }}>首次启动配置</p>
+          <div className="flex items-center justify-center gap-2">
+            <p style={{ color: "hsl(var(--muted-foreground))" }}>首次启动配置</p>
+            <span className="text-xs px-1.5 py-0.5 rounded" style={{ background: "hsl(var(--muted))", color: "hsl(var(--muted-foreground))" }}>
+              v0.0.4
+            </span>
+          </div>
         </div>
 
         {/* 步骤指示器 */}

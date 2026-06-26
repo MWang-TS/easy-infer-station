@@ -22,8 +22,25 @@ class Config:
     # 可选：API/Socket鉴权（未设置则不启用）
     API_TOKEN = (os.environ.get('API_TOKEN') or '').strip()
 
-    # 可选：CORS白名单（后续可收敛CORS用）
+    # 可选：CORS白名单（逗号分隔，追加到默认本机列表）
     CORS_ORIGINS = (os.environ.get('CORS_ORIGINS') or '').strip()
+
+    # 本机 Tauri/Vite 默认允许来源，不对外暴露
+    _DEFAULT_CORS = [
+        'http://localhost',
+        'http://localhost:1420',
+        'http://127.0.0.1',
+        'http://127.0.0.1:1420',
+        'tauri://localhost',
+        'https://tauri.localhost',
+        'http://tauri.localhost',   # Tauri v2 on Windows (WebView2, non-TLS)
+    ]
+
+    @classmethod
+    def get_cors_origins(cls) -> list[str]:
+        """返回 CORS 白名单；不设置 CORS_ORIGINS 时只允许本机来源"""
+        extra = [o.strip() for o in cls.CORS_ORIGINS.split(',') if o.strip()]
+        return cls._DEFAULT_CORS + extra
     
     # 文件上传配置
     UPLOAD_FOLDER = os.environ.get('UPLOAD_FOLDER') or 'uploads'

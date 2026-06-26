@@ -17,6 +17,19 @@ export async function browseFile(inputType: "image" | "video"): Promise<string |
   return path;
 }
 
+/** 打开系统文件对话框，多选图片文件，返回路径数组（取消返回 null）。 */
+export async function browseMultipleImageFiles(): Promise<string[] | null> {
+  const lastPath = localStorage.getItem(LAST_INPUT_PATH_KEY) ?? undefined;
+  const result = await open({
+    multiple: true,
+    filters: [{ name: "图片", extensions: ["jpg", "jpeg", "png", "bmp", "webp"] }],
+    defaultPath: lastPath,
+  });
+  const paths = Array.isArray(result) ? result : result ? [result] : null;
+  if (paths && paths.length > 0) localStorage.setItem(LAST_INPUT_PATH_KEY, paths[0]);
+  return paths;
+}
+
 /** 打开系统文件对话框，选择 YOLO .pt 模型文件（取消返回 null）。记忆上次路径。 */
 export async function browseModelFile(): Promise<string | null> {
   const lastPath = localStorage.getItem(LAST_MODEL_PATH_KEY) ?? undefined;

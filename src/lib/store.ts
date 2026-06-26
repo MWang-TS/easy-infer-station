@@ -12,6 +12,15 @@ export interface AppConfig {
   appDir: string; // easy_infer_station 目录的绝对路径
 }
 
+export interface BatchResultItem {
+  id: string;
+  filename: string;
+  image: string; // base64
+  detectionCount: number;
+  index: number;
+  error?: string; // 推理失败时的错误信息
+}
+
 export interface AlarmImage {
   id: string;
   src: string; // base64 或 URL
@@ -65,6 +74,11 @@ interface AppState {
   // 报警图片
   alarmImages: AlarmImage[];
 
+  // 批量推理
+  batchResults: BatchResultItem[];
+  isBatchInferring: boolean;
+  batchProgress: { current: number; total: number; filename?: string } | null;
+
   // Actions
   setConfig: (config: AppConfig) => void;
   clearConfig: () => void;
@@ -82,6 +96,10 @@ interface AppState {
   setLabels: (labels: string[]) => void;
   addAlarmImage: (img: AlarmImage) => void;
   clearAlarmImages: () => void;
+  addBatchResult: (item: BatchResultItem) => void;
+  clearBatchResults: () => void;
+  setIsBatchInferring: (v: boolean) => void;
+  setBatchProgress: (p: { current: number; total: number; filename?: string } | null) => void;
   reset: () => void; // 清除配置，返回 SetupWizard
 }
 
@@ -100,6 +118,9 @@ export const useAppStore = create<AppState>()(
       models: [],
       labels: [],
       alarmImages: [],
+      batchResults: [],
+      isBatchInferring: false,
+      batchProgress: null,
 
       setConfig: (config) => set({ config, isConfigured: true }),
       clearConfig: () => set({ config: null, isConfigured: false }),
@@ -119,6 +140,10 @@ export const useAppStore = create<AppState>()(
       addAlarmImage: (img) =>
         set((s) => ({ alarmImages: [img, ...s.alarmImages].slice(0, 50) })),
       clearAlarmImages: () => set({ alarmImages: [] }),
+      addBatchResult: (item) => set((s) => ({ batchResults: [...s.batchResults, item] })),
+      clearBatchResults: () => set({ batchResults: [] }),
+      setIsBatchInferring: (v) => set({ isBatchInferring: v }),
+      setBatchProgress: (p) => set({ batchProgress: p }),
       reset: () => set({ config: null, isConfigured: false }),
     }),
     {

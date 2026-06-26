@@ -37,9 +37,6 @@ from routes import main_bp
 # 创建Flask应用实例
 app = Flask(__name__)
 
-# 启用CORS（允许跨域访问）
-CORS(app, resources={r"/*": {"origins": "*"}})
-
 # 配置应用
 app.config.from_object(Config)
 
@@ -51,8 +48,12 @@ app.config['SEND_FILE_MAX_AGE_DEFAULT'] = 0
 # 初始化必要的文件夹
 Config.init_folders()
 
+# 收敛 CORS：只允许本机 Tauri/Vite 来源，防止外部网页跨域调用本地 API
+_cors_origins = Config.get_cors_origins()
+CORS(app, resources={r"/*": {"origins": _cors_origins}})
+
 # 创建SocketIO实例
-socketio = SocketIO(app, cors_allowed_origins="*", async_mode='threading')
+socketio = SocketIO(app, cors_allowed_origins=_cors_origins, async_mode='threading')
 
 # 注册蓝图
 app.register_blueprint(main_bp)
