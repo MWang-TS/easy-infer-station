@@ -58,10 +58,18 @@ export default function SetupWizard() {
     <div className="relative min-h-screen flex items-center justify-center p-6"
       style={{ background: "hsl(var(--background))" }}>
 
+      {/* 无边框窗口拖动区域 */}
+      <div
+        className="absolute top-0 left-0 right-12 h-12 z-10"
+        onMouseDown={(e) => {
+          if (e.buttons === 1) getCurrentWindow().startDragging();
+        }}
+      />
+
       {/* 关闭按钮 */}
       <button
         onClick={() => getCurrentWindow().close()}
-        className="absolute top-4 right-4 p-1.5 rounded-lg transition-opacity hover:opacity-70"
+        className="absolute top-4 right-4 z-20 p-1.5 rounded-lg transition-opacity hover:opacity-70"
         style={{ color: "hsl(var(--muted-foreground))" }}
         title="退出"
       >
@@ -70,7 +78,12 @@ export default function SetupWizard() {
 
       <div className="w-full max-w-2xl">
         {/* 标题 */}
-        <div className="text-center mb-8">
+        <div
+          className="text-center mb-8 select-none cursor-default"
+          onMouseDown={(e) => {
+            if (e.buttons === 1) getCurrentWindow().startDragging();
+          }}
+        >
           <div className="w-16 h-16 rounded-2xl flex items-center justify-center mx-auto mb-4"
             style={{ background: "hsl(var(--primary))" }}>
             <Cpu className="w-8 h-8" style={{ color: "hsl(var(--background))" }} />
@@ -81,7 +94,7 @@ export default function SetupWizard() {
           <div className="flex items-center justify-center gap-2">
             <p style={{ color: "hsl(var(--muted-foreground))" }}>首次启动配置</p>
             <span className="text-xs px-1.5 py-0.5 rounded" style={{ background: "hsl(var(--muted))", color: "hsl(var(--muted-foreground))" }}>
-              v0.0.4
+              v0.0.5
             </span>
           </div>
         </div>
