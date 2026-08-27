@@ -40,6 +40,7 @@ import {
   browseFile,
   browseModelFile,
   browseMultipleImageFiles,
+  browseRoiJsonFile,
   checkForUpdates,
   type BackendStatus,
   type UpdateInfo,
@@ -124,7 +125,7 @@ function TopBar({
             Easy Infer Station
           </span>
           <span className="text-xs px-1.5 py-0.5 rounded" style={{ background: "hsl(var(--muted))", color: "hsl(var(--muted-foreground))" }}>
-            v0.0.5
+            v0.0.6
           </span>
         </div>
 
@@ -486,13 +487,18 @@ interface InferParamsState {
   inputSource: string;
   imagePaths: string[];   // 多图模式已选文件（非空时优先用批量模式）
   modelPath: string;
+  taskType: "detect" | "classify";                       // 任务类型：目标检测 / 分类
   confidence: number;
   iouThresh: number;
   device: string;
   frameSkip: number;
   selectedLabels: number[];                              // 勾选的类别 id；空 = 全部检测
+  alarmLabels: number[];                                 // 分类模式下选中的报警类别 id；空 = 不报警
+  labelAliases: string[];                                // 分类标签中文翻译（按类别 id 索引，空串=用原标签）
   roiEnabled: boolean;
-  roiCoords: [number, number, number, number] | null;    // 归一化 [x1,y1,x2,y2]
+  roiCoords: [number, number, number, number] | null;    // 归一化 [x1,y1,x2,y2]（手绘矩形）
+  roiPolygon: [number, number][] | null;                 // 导入的归一化多边形顶点
+  roiJsonPath: string;                                   // 导入的 ROI JSON 文件路径
   trackingEnabled: boolean;
   trackerType: "bytetrack" | "botsort";
 }
@@ -522,6 +528,30 @@ function drawRoiRect(
   ctx.fillText("ROI", px + 4, py + 14);
 }
 
+function drawRoiPolygon(
+  ctx: CanvasRenderingContext2D,
+  w: number, h: number,
+  points: [number, number][],
+  color: string,
+) {
+  if (!points || points.length < 3) return;
+  ctx.beginPath();
+  points.forEach(([x, y], i) => {
+    const px = x * w, py = y * h;
+    if (i === 0) ctx.moveTo(px, py);
+    else ctx.lineTo(px, py);
+  });
+  ctx.closePath();
+  ctx.fillStyle = color + "22";
+  ctx.fill();
+  ctx.strokeStyle = color;
+  ctx.lineWidth = 2;
+  ctx.stroke();
+  ctx.fillStyle = color;
+  ctx.font = "bold 11px sans-serif";
+  ctx.fillText("ROI", points[0][0] * w + 4, points[0][1] * h + 14);
+}
+
 function ControlPanel({
   params,
   onChange,
@@ -535,6 +565,7 @@ function ControlPanel({
   onBrowseFile,
   onBrowseModel,
   onBrowseMultiple,
+  onImportRoiJson,
   onStartRoiDraw,
   roiDrawMode,
 }: {
@@ -550,6 +581,7 @@ function ControlPanel({
   onBrowseFile: () => void;
   onBrowseModel: () => void;
   onBrowseMultiple: () => void;
+  onImportRoiJson: () => void;
   onStartRoiDraw: () => void;
   roiDrawMode: boolean;
 }) {
@@ -568,6 +600,35 @@ function ControlPanel({
       }}
     >
       <div className="flex-1 overflow-y-auto p-3 space-y-4">
+        {/* 任务类型 */}
+        <Section title="任务类型">
+          <div className="flex gap-1">
+            {[
+              { value: "detect" as const, label: "目标检测" },
+              { value: "classify" as const, label: "分类" },
+            ].map((t) => (
+              <button
+                key={t.value}
+                onClick={() => onChange({ taskType: t.value })}
+                className="flex-1 py-1 rounded text-xs transition-all"
+                style={{
+                  background:
+                    params.taskType === t.value
+                      ? "hsl(var(--primary))"
+                      : "hsl(var(--muted))",
+                  color:
+                    params.taskType === t.value
+                      ? "hsl(var(--primary-foreground))"
+                      : "hsl(var(--muted-foreground))",
+                  border: "1px solid hsl(var(--border))",
+                }}
+              >
+                {t.label}
+              </button>
+            ))}
+          </div>
+        </Section>
+
         {/* 模型选择 */}
         <Section title="模型">
           <label className="text-xs mb-1 block" style={{ color: "hsl(var(--muted-foreground))" }}>
@@ -610,7 +671,59 @@ function ControlPanel({
               <FolderOpen className="w-3.5 h-3.5" />
             </button>
           </div>
-          {labels.length > 0 && (
+          {labels.length > 0 && params.taskType === "classify" ? (
+            /* 分类模式：选择需要报警的类别 */
+            <div className="mt-2">
+              <div className="flex items-center justify-between mb-1">
+                <span className="text-xs" style={{ color: "hsl(var(--muted-foreground))" }}>
+                  报警类别（点击选择，命中则报警）
+                </span>
+                <div className="flex gap-1">
+                  <button
+                    onClick={() => onChange({ alarmLabels: labels.map((_, i) => i) })}
+                    className="text-xs px-1.5 py-0.5 rounded transition-opacity hover:opacity-70"
+                    style={{ background: "hsl(var(--muted))", color: "hsl(var(--muted-foreground))", border: "1px solid hsl(var(--border))" }}
+                  >全选</button>
+                  <button
+                    onClick={() => onChange({ alarmLabels: [] })}
+                    className="text-xs px-1.5 py-0.5 rounded transition-opacity hover:opacity-70"
+                    style={{ background: "hsl(var(--muted))", color: "hsl(var(--muted-foreground))", border: "1px solid hsl(var(--border))" }}
+                  >清空</button>
+                </div>
+              </div>
+              <div className="flex flex-wrap gap-1 max-h-28 overflow-y-auto">
+                {labels.map((l, idx) => {
+                  const sel = params.alarmLabels.includes(idx);
+                  return (
+                    <button
+                      key={idx}
+                      onClick={() =>
+                        onChange({
+                          alarmLabels: sel
+                            ? params.alarmLabels.filter((i) => i !== idx)
+                            : [...params.alarmLabels, idx],
+                        })
+                      }
+                      className="text-xs px-1.5 py-0.5 rounded transition-all"
+                      style={{
+                        background: sel ? "hsl(var(--destructive))" : "hsl(var(--muted))",
+                        color: sel ? "white" : "hsl(var(--muted-foreground))",
+                        border: "1px solid hsl(var(--border))",
+                      }}
+                    >
+                      {l}
+                    </button>
+                  );
+                })}
+              </div>
+              {params.alarmLabels.length === 0 && (
+                <div className="text-xs mt-1 opacity-50" style={{ color: "hsl(var(--muted-foreground))" }}>
+                  未选择报警类别，推理命中不报警
+                </div>
+              )}
+            </div>
+          ) : labels.length > 0 ? (
+            /* 检测模式：类别过滤 */
             <div className="mt-2">
               <div className="flex items-center justify-between mb-1">
                 <span className="text-xs" style={{ color: "hsl(var(--muted-foreground))" }}>
@@ -660,8 +773,85 @@ function ControlPanel({
                 </div>
               )}
             </div>
+          ) : null}
+
+          {/* 分类模式：英文标签中文翻译 */}
+          {params.taskType === "classify" && labels.length > 0 && (
+            <div className="mt-2">
+              <span className="text-xs mb-1 block" style={{ color: "hsl(var(--muted-foreground))" }}>
+                标签翻译（可选，留空则显示原英文标签）
+              </span>
+              <div className="space-y-1 max-h-36 overflow-y-auto">
+                {labels.map((l, idx) => (
+                  <div key={idx} className="flex items-center gap-1.5">
+                    <span
+                      className="w-16 flex-shrink-0 text-xs truncate"
+                      style={{ color: "hsl(var(--muted-foreground))" }}
+                      title={l}
+                    >
+                      {l}
+                    </span>
+                    <input
+                      type="text"
+                      placeholder={l}
+                      value={params.labelAliases?.[idx] ?? ""}
+                      onChange={(e) => {
+                        const arr = Array.from(
+                          { length: labels.length },
+                          (_, i) => params.labelAliases?.[i] ?? ""
+                        );
+                        arr[idx] = e.target.value;
+                        onChange({ labelAliases: arr });
+                      }}
+                      className="flex-1 min-w-0 px-2 py-1 rounded text-xs"
+                      style={{
+                        background: "hsl(var(--muted))",
+                        border: "1px solid hsl(var(--border))",
+                        color: "hsl(var(--foreground))",
+                      }}
+                    />
+                  </div>
+                ))}
+              </div>
+            </div>
           )}
         </Section>
+
+        {/* 分类模式：导入 ROI JSON（多边形，可选；未导入则整图为 ROI） */}
+        {params.taskType === "classify" && (
+          <Section title="ROI 区域">
+            <button
+              onClick={onImportRoiJson}
+              className="w-full py-1 rounded text-xs flex items-center justify-center gap-1 transition-opacity hover:opacity-70"
+              style={{
+                background: "hsl(var(--muted))",
+                color: "hsl(var(--muted-foreground))",
+                border: "1px solid hsl(var(--border))",
+              }}
+            >
+              <FolderOpen className="w-3.5 h-3.5" />
+              导入 ROI JSON（多边形）
+            </button>
+            {params.roiPolygon ? (
+              <div className="mt-1 flex items-center justify-between">
+                <span className="text-xs flex-1 truncate" style={{ color: "hsl(var(--muted-foreground))" }}>
+                  ✓ 已导入（{params.roiPolygon.length} 顶点）
+                </span>
+                <button
+                  onClick={() => onChange({ roiPolygon: null, roiJsonPath: "" })}
+                  className="text-xs px-1.5 py-0.5 rounded transition-opacity hover:opacity-70 flex-shrink-0"
+                  style={{ color: "hsl(var(--destructive))", border: "1px solid hsl(var(--border))" }}
+                >
+                  清除
+                </button>
+              </div>
+            ) : (
+              <p className="text-xs mt-1 opacity-50" style={{ color: "hsl(var(--muted-foreground))" }}>
+                未导入，默认整图为 ROI
+              </p>
+            )}
+          </Section>
+        )}
 
         {/* 输入源 */}
         <Section title="输入源">
@@ -785,22 +975,26 @@ function ControlPanel({
 
         {/* 推理参数 */}
         <Section title="推理参数">
-          <SliderField
-            label="置信度"
-            value={params.confidence}
-            min={0.1}
-            max={1}
-            step={0.05}
-            onChange={(v) => onChange({ confidence: v })}
-          />
-          <SliderField
-            label="IOU 阈值"
-            value={params.iouThresh}
-            min={0.1}
-            max={1}
-            step={0.05}
-            onChange={(v) => onChange({ iouThresh: v })}
-          />
+          {params.taskType === "detect" && (
+            <>
+              <SliderField
+                label="置信度"
+                value={params.confidence}
+                min={0.1}
+                max={1}
+                step={0.05}
+                onChange={(v) => onChange({ confidence: v })}
+              />
+              <SliderField
+                label="IOU 阈值"
+                value={params.iouThresh}
+                min={0.1}
+                max={1}
+                step={0.05}
+                onChange={(v) => onChange({ iouThresh: v })}
+              />
+            </>
+          )}
           <div className="mt-2">
             <label className="text-xs mb-1 block" style={{ color: "hsl(var(--muted-foreground))" }}>
               推理设备
@@ -828,45 +1022,47 @@ function ControlPanel({
         </Section>
 
         {/* 目标跟踪 */}
-        <Section title="目标跟踪">
-          <div className="flex items-center justify-between mb-2">
-            <span className="text-xs" style={{ color: "hsl(var(--muted-foreground))" }}>
-              启用跟踪（视频/RTSP）
-            </span>
-            <button
-              onClick={() => onChange({ trackingEnabled: !params.trackingEnabled })}
-              className="text-xs px-2 py-0.5 rounded transition-all"
-              style={{
-                background: params.trackingEnabled ? "hsl(var(--primary))" : "hsl(var(--muted))",
-                color: params.trackingEnabled ? "hsl(var(--primary-foreground))" : "hsl(var(--muted-foreground))",
-                border: "1px solid hsl(var(--border))",
-              }}
-            >
-              {params.trackingEnabled ? "已启用" : "已禁用"}
-            </button>
-          </div>
-          {params.trackingEnabled && (
-            <div className="relative">
-              <select
-                value={params.trackerType}
-                onChange={(e) => onChange({ trackerType: e.target.value as "bytetrack" | "botsort" })}
-                className="w-full appearance-none pr-7 pl-2 py-1.5 rounded text-xs"
+        {params.taskType === "detect" && (
+          <Section title="目标跟踪">
+            <div className="flex items-center justify-between mb-2">
+              <span className="text-xs" style={{ color: "hsl(var(--muted-foreground))" }}>
+                启用跟踪（视频/RTSP）
+              </span>
+              <button
+                onClick={() => onChange({ trackingEnabled: !params.trackingEnabled })}
+                className="text-xs px-2 py-0.5 rounded transition-all"
                 style={{
-                  background: "hsl(var(--muted))",
+                  background: params.trackingEnabled ? "hsl(var(--primary))" : "hsl(var(--muted))",
+                  color: params.trackingEnabled ? "hsl(var(--primary-foreground))" : "hsl(var(--muted-foreground))",
                   border: "1px solid hsl(var(--border))",
-                  color: "hsl(var(--foreground))",
                 }}
               >
-                <option value="bytetrack">ByteTrack</option>
-                <option value="botsort">BoT-SORT</option>
-              </select>
-              <ChevronDown
-                className="absolute right-2 top-1/2 -translate-y-1/2 w-3.5 h-3.5 pointer-events-none"
-                style={{ color: "hsl(var(--muted-foreground))" }}
-              />
+                {params.trackingEnabled ? "已启用" : "已禁用"}
+              </button>
             </div>
-          )}
-        </Section>
+            {params.trackingEnabled && (
+              <div className="relative">
+                <select
+                  value={params.trackerType}
+                  onChange={(e) => onChange({ trackerType: e.target.value as "bytetrack" | "botsort" })}
+                  className="w-full appearance-none pr-7 pl-2 py-1.5 rounded text-xs"
+                  style={{
+                    background: "hsl(var(--muted))",
+                    border: "1px solid hsl(var(--border))",
+                    color: "hsl(var(--foreground))",
+                  }}
+                >
+                  <option value="bytetrack">ByteTrack</option>
+                  <option value="botsort">BoT-SORT</option>
+                </select>
+                <ChevronDown
+                  className="absolute right-2 top-1/2 -translate-y-1/2 w-3.5 h-3.5 pointer-events-none"
+                  style={{ color: "hsl(var(--muted-foreground))" }}
+                />
+              </div>
+            )}
+          </Section>
+        )}
 
         {/* ROI 区域 */}
         <Section title="ROI 区域">
@@ -889,21 +1085,35 @@ function ControlPanel({
           {params.roiEnabled && (
             <>
               <button
-                onClick={onStartRoiDraw}
-                disabled={roiDrawMode}
-                className="w-full py-1 rounded text-xs transition-opacity hover:opacity-70 disabled:opacity-40"
+                onClick={onImportRoiJson}
+                className="w-full py-1 rounded text-xs flex items-center justify-center gap-1 transition-opacity hover:opacity-70"
                 style={{
-                  background: roiDrawMode ? "hsl(var(--primary))" : "hsl(var(--muted))",
-                  color: roiDrawMode ? "hsl(var(--primary-foreground))" : "hsl(var(--muted-foreground))",
+                  background: "hsl(var(--muted))",
+                  color: "hsl(var(--muted-foreground))",
                   border: "1px solid hsl(var(--border))",
                 }}
               >
-                {roiDrawMode ? "在预览上拖拽绘制..." : "在预览上绘制 ROI"}
+                <FolderOpen className="w-3.5 h-3.5" />
+                导入 ROI JSON（多边形）
               </button>
-              {params.roiCoords && (
+
+              {params.roiPolygon ? (
+                <div className="mt-1 flex items-center justify-between">
+                  <span className="text-xs flex-1 truncate" style={{ color: "hsl(var(--muted-foreground))" }}>
+                    ✓ 已导入多边形 ROI（{params.roiPolygon.length} 顶点）
+                  </span>
+                  <button
+                    onClick={() => onChange({ roiPolygon: null, roiJsonPath: "" })}
+                    className="text-xs px-1.5 py-0.5 rounded transition-opacity hover:opacity-70 flex-shrink-0"
+                    style={{ color: "hsl(var(--destructive))", border: "1px solid hsl(var(--border))" }}
+                  >
+                    清除
+                  </button>
+                </div>
+              ) : params.roiCoords ? (
                 <div className="mt-1 flex items-center justify-between">
                   <span className="text-xs" style={{ color: "hsl(var(--muted-foreground))" }}>
-                    ✓ ROI 已设置
+                    ✓ ROI 已设置（矩形）
                   </span>
                   <button
                     onClick={() => onChange({ roiCoords: null })}
@@ -913,12 +1123,24 @@ function ControlPanel({
                     清除
                   </button>
                 </div>
-              )}
-              {!params.roiCoords && (
+              ) : (
                 <p className="text-xs mt-1 opacity-50" style={{ color: "hsl(var(--muted-foreground))" }}>
-                  尚未设置 ROI
+                  未设置 ROI，默认整图为 ROI
                 </p>
               )}
+
+              <button
+                onClick={onStartRoiDraw}
+                disabled={roiDrawMode}
+                className="w-full py-1 rounded text-xs mt-1 transition-opacity hover:opacity-70 disabled:opacity-40"
+                style={{
+                  background: roiDrawMode ? "hsl(var(--primary))" : "hsl(var(--muted))",
+                  color: roiDrawMode ? "hsl(var(--primary-foreground))" : "hsl(var(--muted-foreground))",
+                  border: "1px solid hsl(var(--border))",
+                }}
+              >
+                {roiDrawMode ? "在预览上拖拽绘制..." : "在预览上绘制矩形 ROI"}
+              </button>
             </>
           )}
         </Section>
@@ -1220,7 +1442,9 @@ function BatchGallery() {
                     fontWeight: item.detectionCount > 0 ? 600 : 400,
                   }}
                 >
-                  {item.detectionCount} 个目标
+                  {item.className
+                    ? `${item.className} ${item.confidence != null ? (item.confidence * 100).toFixed(1) + "%" : ""}`
+                    : `${item.detectionCount} 个目标`}
                 </div>
               </div>
             </div>
@@ -1271,7 +1495,9 @@ function BatchGallery() {
           >
             {selected.filename}
             <span className="ml-2 text-xs" style={{ color: "rgba(255,255,255,0.5)" }}>
-              {selected.detectionCount} 个目标
+              {selected.className
+                ? `分类: ${selected.className} ${selected.confidence != null ? (selected.confidence * 100).toFixed(1) + "%" : ""}`
+                : `${selected.detectionCount} 个目标`}
             </span>
             <span className="ml-2 text-xs" style={{ color: "rgba(255,255,255,0.35)" }}>
               {selectedIdx! + 1} / {total}
@@ -1385,6 +1611,7 @@ function InferenceView({
   onLogDragStart,
   roiEnabled,
   roiCoords,
+  roiPolygon,
   roiDrawMode,
   onRoiDrawn,
   onRoiDrawModeEnd,
@@ -1396,6 +1623,7 @@ function InferenceView({
   onLogDragStart: (e: React.MouseEvent) => void;
   roiEnabled: boolean;
   roiCoords: [number, number, number, number] | null;
+  roiPolygon: [number, number][] | null;
   roiDrawMode: boolean;
   onRoiDrawn: (coords: [number, number, number, number]) => void;
   onRoiDrawModeEnd: () => void;
@@ -1403,7 +1631,7 @@ function InferenceView({
   previewLoading: boolean;
   inputType: "image" | "video" | "rtsp";
 }) {
-  const { currentFrame, isInferring, inferLog, batchResults, isBatchInferring } = useAppStore();
+  const { currentFrame, isInferring, inferLog, batchResults, isBatchInferring, classificationResult } = useAppStore();
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const drawStateRef = useRef({ active: false, startX: 0, startY: 0 });
   const cbRef = useRef({ onRoiDrawn, onRoiDrawModeEnd });
@@ -1419,10 +1647,12 @@ function InferenceView({
     canvas.width = r.width || canvas.offsetWidth;
     canvas.height = r.height || canvas.offsetHeight;
     ctx.clearRect(0, 0, canvas.width, canvas.height);
-    if (roiEnabled && roiCoords) {
+    if (roiEnabled && roiPolygon) {
+      drawRoiPolygon(ctx, canvas.width, canvas.height, roiPolygon, "#00e676");
+    } else if (roiEnabled && roiCoords) {
       drawRoiRect(ctx, canvas.width, canvas.height, roiCoords, "#00e676", false);
     }
-  }, [roiEnabled, roiCoords]);
+  }, [roiEnabled, roiCoords, roiPolygon]);
 
   // 动态绘制事件
   useEffect(() => {
@@ -1547,6 +1777,32 @@ function InferenceView({
             }}
           >
             拖拽绘制 ROI 区域
+          </div>
+        )}
+
+        {/* 分类结果醒目提示 */}
+        {classificationResult && !roiDrawMode && (
+          <div
+            style={{
+              position: "absolute", bottom: 16, left: "50%", transform: "translateX(-50%)",
+              background: "rgba(0,0,0,0.78)",
+              border: `2px solid ${classificationResult.isAlarm ? "#ff1744" : "#00e676"}`,
+              padding: "8px 22px", borderRadius: 12, pointerEvents: "none",
+              textAlign: "center", zIndex: 20, boxShadow: "0 4px 24px rgba(0,0,0,0.5)",
+            }}
+          >
+            <div className="text-xs" style={{ color: "rgba(255,255,255,0.6)", letterSpacing: 1 }}>
+              {classificationResult.isAlarm ? "⚠ 报警" : "分类结果"}
+            </div>
+            <div
+              className="text-xl font-bold leading-tight"
+              style={{ color: classificationResult.isAlarm ? "#ff5252" : "#00e676" }}
+            >
+              {classificationResult.className}
+            </div>
+            <div className="text-sm font-semibold" style={{ color: "#fff" }}>
+              {(classificationResult.confidence * 100).toFixed(1)}%
+            </div>
           </div>
         )}
       </div>
@@ -1719,13 +1975,18 @@ export default function MainPage() {
     inputSource: "",
     imagePaths: [],
     modelPath: "",
+    taskType: "detect",
     confidence: 0.5,
     iouThresh: 0.45,
     device: "cuda",
     frameSkip: 3,
     selectedLabels: [],
+    alarmLabels: [],
+    labelAliases: [],
     roiEnabled: false,
     roiCoords: null,
+    roiPolygon: null,
+    roiJsonPath: "",
     trackingEnabled: false,
     trackerType: "bytetrack",
   });
@@ -1782,13 +2043,13 @@ export default function MainPage() {
   const handleBrowse = async () => {
     const path = await browseFile(params.inputType as "image" | "video");
     if (path)
-      setParams((p) => ({ ...p, inputSource: path, imagePaths: [], roiCoords: null, roiEnabled: false }));
+      setParams((p) => ({ ...p, inputSource: path, imagePaths: [], roiCoords: null, roiPolygon: null, roiJsonPath: "", roiEnabled: false }));
   };
 
   const handleBrowseMultiple = async () => {
     const paths = await browseMultipleImageFiles();
     if (paths && paths.length > 0) {
-      setParams((p) => ({ ...p, imagePaths: paths, inputSource: "", roiCoords: null, roiEnabled: false }));
+      setParams((p) => ({ ...p, imagePaths: paths, inputSource: "", roiCoords: null, roiPolygon: null, roiJsonPath: "", roiEnabled: false }));
     }
   };
 
@@ -1946,8 +2207,10 @@ export default function MainPage() {
             .sort(([a], [b]) => Number(a) - Number(b))
             .map(([, v]) => String(v));
       setLabels(list);
-      // 切换模型时清除已选类别
-      setParams((p) => ({ ...p, selectedLabels: [] }));
+      // 根据模型任务类型自动切换 UI 模式（classify -> 分类，其余 -> 检测）
+      const task: InferParamsState["taskType"] = data.task === "classify" ? "classify" : "detect";
+      // 切换模型时清除已选类别与标签翻译，并按需切换任务类型
+      setParams((p) => ({ ...p, selectedLabels: [], alarmLabels: [], labelAliases: [], taskType: task }));
     } catch (e) {
       addInferLog(`加载标签请求失败: ${e}`);
     }
@@ -2019,15 +2282,51 @@ export default function MainPage() {
     setParams((p) => ({ ...p, modelPath: path }));
   };
 
+  const handleImportRoiJson = async () => {
+    const path = await browseRoiJsonFile();
+    if (!path) return;
+    try {
+      const resp = await fetch(
+        `http://127.0.0.1:${config?.port ?? 8080}/api/roi/parse?path=${encodeURIComponent(path)}`,
+        { headers: getAuthHeaders() }
+      );
+      const data = await resp.json();
+      if (!data.success) {
+        addInferLog(`导入 ROI 失败: ${data.message ?? "未知错误"}`);
+        return;
+      }
+      const polygon: [number, number][] = (data.polygon ?? []) as [number, number][];
+      if (!Array.isArray(polygon) || polygon.length < 3) {
+        addInferLog("导入 ROI 失败: JSON 中缺少有效的 polygon 多边形坐标");
+        return;
+      }
+      setParams((p) => ({
+        ...p,
+        roiJsonPath: path,
+        roiPolygon: polygon,
+        roiCoords: null,
+        roiEnabled: true,
+      }));
+      addInferLog(`已导入 ROI 多边形（${polygon.length} 个顶点）`);
+    } catch (e) {
+      addInferLog(`导入 ROI 失败: ${e}`);
+    }
+  };
+
   const handleStart = () => {
     const commonParams = {
       model_path: params.modelPath,
       confidence: params.confidence,
       iou: params.iouThresh,
       device: params.device,
+      task_type: params.taskType,
       selected_labels: params.selectedLabels,
+      alarm_labels: params.alarmLabels,
+      label_aliases: params.labelAliases,
       roi_enabled: params.roiEnabled,
       roi_coords: params.roiCoords,
+      roi_polygon: params.roiPolygon,
+      roi_json_path: params.roiJsonPath || undefined,
     };
 
     if (params.imagePaths.length > 0) {
@@ -2067,6 +2366,8 @@ export default function MainPage() {
               // 输入源变更时自动清除 ROI
               if ("inputSource" in p && p.inputSource !== prev.inputSource) {
                 next.roiCoords = null;
+                next.roiPolygon = null;
+                next.roiJsonPath = "";
                 next.roiEnabled = false;
                 setRoiDrawMode(false);
               }
@@ -2091,6 +2392,7 @@ export default function MainPage() {
           onBrowseFile={handleBrowse}
           onBrowseModel={handleBrowseModel}
           onBrowseMultiple={handleBrowseMultiple}
+          onImportRoiJson={handleImportRoiJson}
           onStartRoiDraw={() => setRoiDrawMode(true)}
           roiDrawMode={roiDrawMode}
         />
@@ -2110,9 +2412,10 @@ export default function MainPage() {
           onLogDragStart={startLogDrag}
           roiEnabled={params.roiEnabled}
           roiCoords={params.roiCoords}
+          roiPolygon={params.roiPolygon}
           roiDrawMode={roiDrawMode}
           onRoiDrawn={(coords) => {
-            setParams((p) => ({ ...p, roiCoords: coords }));
+            setParams((p) => ({ ...p, roiCoords: coords, roiPolygon: null, roiJsonPath: "" }));
             setRoiDrawMode(false);
           }}
           onRoiDrawModeEnd={() => setRoiDrawMode(false)}

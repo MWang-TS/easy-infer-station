@@ -19,6 +19,8 @@ export interface BatchResultItem {
   detectionCount: number;
   index: number;
   error?: string; // 推理失败时的错误信息
+  className?: string; // 分类模式下预测类别
+  confidence?: number; // 分类置信度
 }
 
 export interface AlarmImage {
@@ -26,6 +28,12 @@ export interface AlarmImage {
   src: string; // base64 或 URL
   timestamp: string;
   label: string;
+}
+
+export interface ClassificationResult {
+  className: string;
+  confidence: number;
+  isAlarm: boolean;
 }
 
 export interface SystemInfo {
@@ -66,6 +74,7 @@ interface AppState {
   isInferring: boolean;
   currentFrame: string | null;
   inferLog: string[];
+  classificationResult: ClassificationResult | null;
 
   // 模型列表和标签
   models: string[];
@@ -89,6 +98,7 @@ interface AppState {
   setSocketConnected: (connected: boolean) => void;
   setSystemInfo: (info: SystemInfo) => void;
   setInferring: (inferring: boolean) => void;
+  setClassificationResult: (r: ClassificationResult | null) => void;
   setCurrentFrame: (frame: string | null) => void;
   addInferLog: (log: string) => void;
   clearInferLog: () => void;
@@ -114,6 +124,7 @@ export const useAppStore = create<AppState>()(
       systemInfo: null,
       isInferring: false,
       currentFrame: null,
+      classificationResult: null,
       inferLog: [],
       models: [],
       labels: [],
@@ -129,6 +140,7 @@ export const useAppStore = create<AppState>()(
       setSocketConnected: (connected) => set({ socketConnected: connected }),
       setSystemInfo: (info) => set({ systemInfo: info }),
       setInferring: (inferring) => set({ isInferring: inferring }),
+      setClassificationResult: (r) => set({ classificationResult: r }),
       setCurrentFrame: (frame) => set({ currentFrame: frame }),
       addInferLog: (log) =>
         set((s) => ({

@@ -177,9 +177,15 @@ class InferenceService:
             elif input_type == 'images':
                 self._inference_on_images(params)
             elif input_type == 'video':
-                self._inference_on_video(params)
+                if params.get('task_type') == 'classify':
+                    self._inference_on_video_classify(params)
+                else:
+                    self._inference_on_video(params)
             elif input_type == 'rtsp':
-                self._inference_on_rtsp(params)
+                if params.get('task_type') == 'classify':
+                    self._inference_on_rtsp_classify(params)
+                else:
+                    self._inference_on_rtsp(params)
             
         except BaseException as e:
             import traceback
@@ -216,17 +222,53 @@ class InferenceService:
                     self.result_video_writer = None
     
     def _inference_on_image(self, params):
-        """图片推理"""
+        """图片推理（支持目标检测 / 分类）"""
         input_path = params.get('input_path') or params.get('input_source', '')
         confidence = params.get('confidence', 0.5)
         iou_threshold = params.get('iou', params.get('iou_threshold', 0.45))
         pose_mode = params.get('pose_mode_enabled', False)
         selected_labels = params.get('selected_labels', [])
-        roi_enabled = params.get('roi_enabled', False)
-        roi_coords = params.get('roi_coords')
+        task_type = params.get('task_type', 'detect')
+        roi_polygon = self._resolve_roi_polygon(params)
         
         self.socketio.emit('inference_status', {'message': '开始图片推理...'})
         
+        # ── 分类模式 ──
+        if task_type == 'classify':
+            frame = cv2.imread(input_path)
+            if frame is None:
+                self.socketio.emit('inference_error', {'message': '无法读取图片'})
+                return
+            class_id, class_name, conf_value, annotated_image = self._classify_frame(
+                frame, roi_polygon, params.get('label_aliases')
+            )
+            is_alarm = class_id in (params.get('alarm_labels') or [])
+            
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            result_filename = f"result_{timestamp}.jpg"
+            result_path = os.path.join(Config.get_results_dir(), result_filename)
+            cv2.imwrite(result_path, annotated_image)
+            image_base64 = self._image_to_base64(annotated_image)
+            
+            self.socketio.emit('inference_result', {
+                'type': 'image',
+                'image': image_base64,
+                'result_path': result_path,
+                'result_filename': result_filename,
+                'detection_count': 1,
+                'class_name': class_name,
+                'confidence': conf_value,
+                'is_alarm': is_alarm,
+                'message': f'分类完成: {class_name} ({conf_value:.2f})'
+            })
+            # 命中报警类别则记录一条报警（单图每次推理都判定）
+            self._maybe_emit_classify_alarm(
+                params, annotated_image, class_id, class_name, conf_value, 'image', 0, interval=0
+            )
+            self.socketio.emit('inference_complete', {'message': '图片分类完成'})
+            return
+        
+        # ── 检测模式 ──
         # 执行推理
         if pose_mode:
             results = self.model(
@@ -255,8 +297,8 @@ class InferenceService:
             original_image = cv2.imread(input_path)
             
             # 如果启用ROI，ROI内的框显示为红色；否则用YOLO默认颜色
-            if roi_enabled and roi_coords:
-                annotated_image, detection_count = self._annotate_with_roi(result, roi_coords)
+            if roi_polygon is not None:
+                annotated_image, detection_count = self._annotate_with_roi_polygon(result, roi_polygon)
             else:
                 # 不启用ROI时，绘制所有检测框
                 annotated_image = result.plot()
@@ -289,12 +331,16 @@ class InferenceService:
         iou_threshold = params.get('iou', params.get('iou_threshold', 0.45))
         pose_mode = params.get('pose_mode_enabled', False)
         selected_labels = params.get('selected_labels', [])
-        roi_enabled = params.get('roi_enabled', False)
-        roi_coords = params.get('roi_coords')
+        task_type = params.get('task_type', 'detect')
+        roi_polygon = self._resolve_roi_polygon(params)
 
         total = len(input_paths)
         if total == 0:
             self.socketio.emit('batch_complete', {'total': 0, 'message': '没有图片需要处理'})
+            return
+
+        if task_type == 'classify':
+            self._inference_on_images_classify(params, input_paths, total, roi_polygon)
             return
 
         self.socketio.emit('inference_status', {'message': f'开始批量推理，共 {total} 张图片...'})
@@ -340,8 +386,8 @@ class InferenceService:
                         keep_mask = torch.tensor([int(cls.item()) in selected_labels for cls in result.boxes.cls])
                         result.boxes = result.boxes[keep_mask]
 
-                    if roi_enabled and roi_coords:
-                        annotated_image, detection_count = self._annotate_with_roi(result, roi_coords)
+                    if roi_polygon is not None:
+                        annotated_image, detection_count = self._annotate_with_roi_polygon(result, roi_polygon)
                     else:
                         annotated_image = result.plot()
                         detection_count = len(result.boxes) if hasattr(result, 'boxes') and result.boxes is not None else 0
@@ -380,8 +426,7 @@ class InferenceService:
         iou_threshold = params.get('iou', params.get('iou_threshold', 0.45))
         pose_mode = params.get('pose_mode_enabled', False)
         selected_labels = params.get('selected_labels', [])
-        roi_enabled = params.get('roi_enabled', False)
-        roi_coords = params.get('roi_coords')
+        roi_polygon = self._resolve_roi_polygon(params)
         tracking_enabled = params.get('tracking_enabled', False)
         tracker_type = params.get('tracker', 'bytetrack')
         
@@ -421,7 +466,7 @@ class InferenceService:
         # 缓存最后一次检测结果，用于跳帧时复用
         last_detections = []
         last_detection_count = 0
-        last_roi_coords = roi_coords if roi_enabled else None
+        last_roi_polygon = roi_polygon
         
         while self.is_running:
             # 用局部 cap，不受 self.video_capture 被新线程覆盖的影响
@@ -474,8 +519,8 @@ class InferenceService:
                         result.boxes = result.boxes[keep_mask]
                     
                     # 绘制检测框（ROI内红色，ROI外默认颜色）
-                    if roi_enabled and roi_coords:
-                        annotated_frame, _ = self._annotate_with_roi(result, roi_coords)
+                    if roi_polygon is not None:
+                        annotated_frame, _ = self._annotate_with_roi_polygon(result, roi_polygon)
                     else:
                         annotated_frame = result.plot()
 
@@ -504,10 +549,10 @@ class InferenceService:
                                 'class': int(cls.cpu().numpy()),
                                 'class_name': self._get_class_name(int(cls.cpu().numpy()))
                             }
-                            if roi_enabled and roi_coords:
+                            if roi_polygon is not None:
                                 center_x = (detection['x1'] + detection['x2']) / 2
                                 center_y = (detection['y1'] + detection['y2']) / 2
-                                if roi_coords[0] <= center_x <= roi_coords[2] and roi_coords[1] <= center_y <= roi_coords[3]:
+                                if self._point_in_polygon(center_x, center_y, roi_polygon):
                                     detections.append(detection)
                                     detection_count += 1
                             else:
@@ -519,7 +564,7 @@ class InferenceService:
                     # 缓存本次检测结果
                     last_detections = detections
                     last_detection_count = detection_count
-                    last_roi_coords = roi_coords if roi_enabled else None
+                    last_roi_polygon = roi_polygon
 
                     # 发送实时预览帧（缩小到 640px 宽以减少传输量）
                     elapsed_time = time.time() - start_time
@@ -578,7 +623,7 @@ class InferenceService:
                     'progress': progress,
                     'fps': fps_actual,
                     'total_frames': total_frames,
-                    'roi': last_roi_coords
+                    'roi': last_roi_polygon
                 })
         
         # 释放本函数打开的资源（局部变量引用，不受新线程影响）
@@ -614,8 +659,7 @@ class InferenceService:
         iou_threshold = params.get('iou', params.get('iou_threshold', 0.45))
         pose_mode = params.get('pose_mode_enabled', False)
         selected_labels = params.get('selected_labels', [])
-        roi_enabled = params.get('roi_enabled', False)
-        roi_coords = params.get('roi_coords')
+        roi_polygon = self._resolve_roi_polygon(params)
         tracking_enabled = params.get('tracking_enabled', False)
         tracker_type = params.get('tracker', 'bytetrack')
         
@@ -681,8 +725,8 @@ class InferenceService:
                     result.boxes = result.boxes[keep_mask]
                 
                 # 如果启用ROI，ROI内的框显示为红色；否则用YOLO默认颜色
-                if roi_enabled and roi_coords:
-                    annotated_frame, detection_count = self._annotate_with_roi(result, roi_coords)
+                if roi_polygon is not None:
+                    annotated_frame, detection_count = self._annotate_with_roi_polygon(result, roi_polygon)
                 else:
                     # 不启用ROI时，绘制所有检测框
                     annotated_frame = result.plot()
@@ -832,3 +876,428 @@ class InferenceService:
         if self.model and hasattr(self.model, 'names'):
             return self.model.names.get(class_id, f'Class {class_id}')
         return f'Class {class_id}'
+
+    # ─── ROI 多边形解析 ──────────────────────────────────────
+    def _resolve_roi_polygon(self, params):
+        """解析 ROI 多边形（归一化坐标点列表 [[x,y], ...]）。
+        优先级：前端传入的 roi_polygon > roi_json_path 文件 > 旧矩形 roi_coords。
+        未启用 ROI 或无有效数据时返回 None（整图）。
+        分类任务下，只要提供了 ROI 数据就直接应用（不依赖 roi_enabled 开关）。"""
+        task_type = params.get('task_type', 'detect')
+        roi_enabled = params.get('roi_enabled', False)
+        if not roi_enabled and task_type != 'classify':
+            return None
+
+        pts = self._normalize_polygon(params.get('roi_polygon'))
+        if pts:
+            return pts
+
+        json_path = params.get('roi_json_path')
+        if json_path and os.path.exists(json_path):
+            pts = self._parse_roi_json(json_path)
+            if pts:
+                return pts
+
+        rect = params.get('roi_coords')
+        if rect and isinstance(rect, (list, tuple)) and len(rect) == 4:
+            try:
+                x1, y1, x2, y2 = (float(v) for v in rect)
+                return [[x1, y1], [x2, y1], [x2, y2], [x1, y2]]
+            except (TypeError, ValueError):
+                pass
+        return None
+
+    def _normalize_polygon(self, poly):
+        """把 [[x,y],...] 转为 float 点列表；无效返回 None。"""
+        if not isinstance(poly, list) or len(poly) < 3:
+            return None
+        pts = []
+        for p in poly:
+            if isinstance(p, (list, tuple)) and len(p) >= 2:
+                try:
+                    pts.append([float(p[0]), float(p[1])])
+                except (TypeError, ValueError):
+                    continue
+        return pts if len(pts) >= 3 else None
+
+    def _parse_roi_json(self, json_path):
+        """读取 ROI JSON 文件并提取 polygon 顶点。"""
+        try:
+            import json
+            with open(json_path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            if isinstance(data, dict):
+                return self._normalize_polygon(data.get('polygon'))
+        except Exception as e:
+            print(f"解析ROI JSON失败: {e}")
+        return None
+
+    def _point_in_polygon(self, x, y, poly):
+        """射线法判断点 (x,y) 是否在多边形内（含边界）。"""
+        inside = False
+        n = len(poly)
+        j = n - 1
+        for i in range(n):
+            xi, yi = poly[i]
+            xj, yj = poly[j]
+            if ((yi > y) != (yj > y)) and (x < (xj - xi) * (y - yi) / (yj - yi) + xi):
+                inside = not inside
+            j = i
+        return inside
+
+    def _extract_roi_region(self, image, polygon_norm):
+        """按归一化多边形抠图：轮廓外置黑，返回多边形外接矩形裁剪结果。
+        与训练时抠图方式一致，避免推理区域与训练区域不一致。"""
+        h, w = image.shape[:2]
+        pts = np.array(
+            [[int(round(x * w)), int(round(y * h))] for x, y in polygon_norm],
+            dtype=np.int32
+        )
+        mask = np.zeros((h, w), dtype=np.uint8)
+        cv2.fillPoly(mask, [pts], 255)
+        black = np.zeros_like(image)
+        masked = np.where(mask[..., None] == 255, image, black)
+        x, y, ww, hh = cv2.boundingRect(pts)
+        return masked[y:y + hh, x:x + ww]
+
+    def _annotate_classify(self, frame, polygon_norm):
+        """在原始帧上绘制 ROI 多边形轮廓。
+        分类结果文字（含中文）改由前端浮层展示，避免 OpenCV putText 中文乱码。"""
+        annotated = frame.copy()
+        if polygon_norm is not None:
+            h, w = annotated.shape[:2]
+            pts = np.array(
+                [[int(round(x * w)), int(round(y * h))] for x, y in polygon_norm],
+                dtype=np.int32
+            )
+            cv2.polylines(annotated, [pts], True, (0, 230, 118), 2)
+        return annotated
+
+    def _classify_frame(self, frame, polygon_norm, aliases=None):
+        """对单帧执行分类，返回 (class_id, class_name, conf, annotated_frame)。
+        aliases 为标签翻译（dict 或按类别 id 索引的 list），命中则用翻译后的名称展示。"""
+        input_img = frame
+        if polygon_norm is not None:
+            crop = self._extract_roi_region(frame, polygon_norm)
+            if crop is not None and crop.size > 0:
+                input_img = crop
+
+        results = self.model(input_img, device=self._device_str(self.device))
+        class_id = -1
+        class_name = "unknown"
+        conf = 0.0
+        for r in results:
+            if hasattr(r, 'probs') and r.probs is not None:
+                class_id = int(r.probs.top1)
+                class_name = self._get_class_name(class_id)
+                alias = self._resolve_alias(class_id, aliases)
+                if alias:
+                    class_name = alias
+                conf = float(r.probs.top1conf)
+                break
+        annotated = self._annotate_classify(frame, polygon_norm)
+        return class_id, class_name, conf, annotated
+
+    def _resolve_alias(self, class_id, aliases):
+        """从标签翻译表取类别中文名；无有效翻译返回 None。"""
+        if not aliases:
+            return None
+        if isinstance(aliases, dict):
+            v = aliases.get(class_id) or aliases.get(str(class_id))
+            return v.strip() if isinstance(v, str) and v.strip() else None
+        if isinstance(aliases, (list, tuple)) and 0 <= class_id < len(aliases):
+            v = aliases[class_id]
+            return v.strip() if isinstance(v, str) and v.strip() else None
+        return None
+
+    def _maybe_emit_classify_alarm(self, params, annotated, class_id, class_name, conf,
+                                   source_type, frame_count=0, interval=None):
+        """分类结果命中报警类别时，保存报警图并推送报警事件（带节流）。
+        alarm_labels 为空表示不报警；interval 为 None 时使用 alarm_interval（默认 5 秒）。"""
+        alarm_labels = params.get('alarm_labels', [])
+        if not alarm_labels or class_id not in alarm_labels:
+            return
+
+        alarm_interval = interval if interval is not None else params.get('alarm_interval', 5)
+        now = time.time()
+        last = getattr(self, 'last_classify_alarm_time', 0)
+        if now - last < alarm_interval:
+            return
+        self.last_classify_alarm_time = now
+
+        timestamp_str = datetime.now().strftime('%Y%m%d_%H%M%S')
+        alarm_filename = f"alarm_{timestamp_str}_{frame_count}.jpg"
+        alarm_dir = os.path.join('static', 'alarmimage')
+        os.makedirs(alarm_dir, exist_ok=True)
+        cv2.imwrite(os.path.join(alarm_dir, alarm_filename), annotated)
+
+        self.socketio.emit('alarm_triggered', {
+            'input_type': source_type,
+            'source_type': source_type,
+            'filename': alarm_filename,
+            'count': 1,
+            'class_name': class_name,
+            'confidence': conf,
+            'timestamp': timestamp_str,
+        })
+
+    def _annotate_with_roi_polygon(self, result, polygon_norm):
+        """绘制检测框：ROI 多边形内的框用红色，并在图上绘制多边形轮廓。
+        返回 (annotated_frame, inside_count)。"""
+        annotated = result.plot()
+        inside_count = 0
+
+        if not (hasattr(result, 'boxes') and result.boxes is not None and len(result.boxes) > 0):
+            return annotated, 0
+
+        h, w = annotated.shape[:2]
+        pts = np.array(
+            [[int(round(x * w)), int(round(y * h))] for x, y in polygon_norm],
+            dtype=np.int32
+        )
+        cv2.polylines(annotated, [pts], True, (0, 230, 118), 2)
+
+        for i in range(len(result.boxes)):
+            box_n = result.boxes.xyxyn[i].cpu().numpy()
+            cx = (float(box_n[0]) + float(box_n[2])) / 2
+            cy = (float(box_n[1]) + float(box_n[3])) / 2
+
+            if self._point_in_polygon(cx, cy, polygon_norm):
+                inside_count += 1
+                box_px = result.boxes.xyxy[i].cpu().numpy()
+                bx1, by1 = int(box_px[0]), int(box_px[1])
+                bx2, by2 = int(box_px[2]), int(box_px[3])
+                conf = float(result.boxes.conf[i].cpu().numpy())
+                cls_id = int(result.boxes.cls[i].cpu().numpy())
+                names = result.names if hasattr(result, 'names') and result.names else {}
+                cls_name = names.get(cls_id, str(cls_id))
+                label = f"{cls_name} {conf:.2f}"
+
+                cv2.rectangle(annotated, (bx1, by1), (bx2, by2), (0, 0, 255), 3)
+                (tw, th), baseline = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
+                cv2.rectangle(annotated, (bx1, by1 - th - baseline - 2),
+                              (bx1 + tw + 2, by1), (0, 0, 255), -1)
+                cv2.putText(annotated, label, (bx1 + 1, by1 - baseline - 1),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+
+        return annotated, inside_count
+
+    # ─── 分类推理（批量图片 / 视频 / RTSP）────────────────────
+    def _inference_on_images_classify(self, params, input_paths, total, roi_polygon):
+        """批量图片分类推理"""
+        self.socketio.emit('inference_status', {'message': f'开始批量分类，共 {total} 张图片...'})
+        processed = 0
+
+        for idx, input_path in enumerate(input_paths):
+            if not self.is_running:
+                break
+            filename = os.path.basename(input_path)
+            self.socketio.emit('batch_progress', {
+                'current': idx, 'total': total, 'filename': filename,
+            })
+
+            if not os.path.exists(input_path):
+                self.socketio.emit('batch_item_result', {
+                    'index': idx, 'total': total,
+                    'filename': filename, 'image': '',
+                    'detection_count': 0, 'error': '文件不存在',
+                })
+                processed += 1
+                continue
+
+            try:
+                frame = cv2.imread(input_path)
+                if frame is None:
+                    raise ValueError('无法读取图片')
+                class_id, class_name, conf_value, annotated = self._classify_frame(
+                    frame, roi_polygon, params.get('label_aliases')
+                )
+                image_base64 = self._image_to_base64(annotated)
+                self.socketio.emit('batch_item_result', {
+                    'index': idx, 'total': total,
+                    'filename': filename, 'image': image_base64,
+                    'detection_count': 1,
+                    'class_name': class_name,
+                    'confidence': conf_value,
+                })
+                # 命中报警类别则记录一条报警（批量每张命中图各一条）
+                self._maybe_emit_classify_alarm(
+                    params, annotated, class_id, class_name, conf_value, 'image', idx, interval=0
+                )
+                processed += 1
+            except Exception as e:
+                self.socketio.emit('batch_item_result', {
+                    'index': idx, 'total': total,
+                    'filename': filename, 'image': '',
+                    'detection_count': 0, 'error': str(e),
+                })
+                processed += 1
+
+        if self.is_running:
+            self.socketio.emit('batch_complete', {
+                'total': total,
+                'processed': processed,
+                'message': f'批量分类完成，共处理 {processed}/{total} 张图片',
+            })
+        else:
+            self.socketio.emit('inference_stopped', {
+                'message': f'批量分类已停止，已处理 {processed}/{total} 张',
+            })
+
+    def _inference_on_video_classify(self, params):
+        """视频分类推理"""
+        input_path = params.get('input_path') or params.get('input_source', '')
+        roi_polygon = self._resolve_roi_polygon(params)
+
+        self.socketio.emit('inference_status', {'message': '开始视频分类推理...'})
+
+        cap = cv2.VideoCapture(input_path)
+        self.video_capture = cap
+        if not cap.isOpened():
+            self.video_capture = None
+            self.socketio.emit('inference_error', {'message': '无法打开视频文件'})
+            return
+
+        fps = int(cap.get(cv2.CAP_PROP_FPS)) or 25
+        width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        result_filename = f"result_{timestamp}.mp4"
+        result_path = os.path.join(Config.get_results_dir(), result_filename)
+        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+        writer = cv2.VideoWriter(result_path, fourcc, fps, (width, height))
+        self.result_video_writer = writer
+
+        frame_count = 0
+        start_time = time.time()
+        last_class_name = ""
+        last_conf = 0.0
+
+        while self.is_running:
+            ret, frame = cap.read()
+            if not ret:
+                break
+            frame_count += 1
+            class_id, class_name, conf_value, annotated = self._classify_frame(
+                frame, roi_polygon, params.get('label_aliases')
+            )
+            is_alarm = class_id in (params.get('alarm_labels') or [])
+            last_class_name, last_conf = class_name, conf_value
+
+            try:
+                if writer is not None:
+                    writer.write(annotated)
+            except Exception:
+                pass
+
+            # 命中报警类别则按间隔记录报警（默认 5 秒节流）
+            self._maybe_emit_classify_alarm(
+                params, annotated, class_id, class_name, conf_value, 'video', frame_count
+            )
+
+            elapsed = time.time() - start_time
+            fps_actual = frame_count / elapsed if elapsed > 0 else 0
+            try:
+                preview_h, preview_w = annotated.shape[:2]
+                if preview_w > 640:
+                    scale = 640 / preview_w
+                    preview = cv2.resize(annotated, (640, int(preview_h * scale)))
+                else:
+                    preview = annotated
+                _, buf = cv2.imencode('.jpg', preview, [cv2.IMWRITE_JPEG_QUALITY, 75])
+                frame_b64 = "data:image/jpeg;base64," + base64.b64encode(buf).decode('utf-8')
+                self.socketio.emit('inference_progress', {
+                    'image': frame_b64,
+                    'frame': frame_count,
+                    'fps': fps_actual,
+                    'detection_count': 1,
+                    'class_name': class_name,
+                    'confidence': conf_value,
+                    'is_alarm': is_alarm,
+                })
+            except Exception:
+                pass
+
+        try:
+            cap.release()
+        except Exception:
+            pass
+        try:
+            writer.release()
+        except Exception:
+            pass
+        if self.video_capture is cap:
+            self.video_capture = None
+        if self.result_video_writer is writer:
+            self.result_video_writer = None
+
+        if self.is_running and self.inference_thread is threading.current_thread():
+            self.socketio.emit('inference_complete', {
+                'message': f'视频分类推理完成，共处理 {frame_count} 帧，最后类别: {last_class_name} ({last_conf:.2f})',
+                'result_path': result_path,
+                'result_filename': result_filename
+            })
+
+    def _inference_on_rtsp_classify(self, params):
+        """RTSP流分类推理"""
+        rtsp_url = params.get('input_path') or params.get('input_source', '')
+        roi_polygon = self._resolve_roi_polygon(params)
+
+        self.socketio.emit('inference_status', {'message': f'正在连接RTSP流: {rtsp_url}'})
+
+        cap = cv2.VideoCapture(rtsp_url)
+        self.video_capture = cap
+        cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+        if not cap.isOpened():
+            self.video_capture = None
+            self.socketio.emit('inference_error', {'message': '无法连接RTSP流'})
+            return
+
+        self.socketio.emit('inference_status', {'message': 'RTSP流连接成功，开始分类推理...'})
+
+        frame_count = 0
+        start_time = time.time()
+
+        while self.is_running:
+            ret, frame = cap.read()
+            if not ret:
+                time.sleep(0.1)
+                continue
+            frame_count += 1
+            class_id, class_name, conf_value, annotated = self._classify_frame(
+                frame, roi_polygon, params.get('label_aliases')
+            )
+            is_alarm = class_id in (params.get('alarm_labels') or [])
+
+            # 命中报警类别则按间隔记录报警（默认 5 秒节流）
+            self._maybe_emit_classify_alarm(
+                params, annotated, class_id, class_name, conf_value, 'rtsp', frame_count
+            )
+
+            image_base64 = self._image_to_base64(annotated)
+            elapsed = time.time() - start_time
+            fps_actual = frame_count / elapsed if elapsed > 0 else 0
+            self.socketio.emit('inference_progress', {
+                'image': image_base64,
+                'frame': frame_count,
+                'fps': fps_actual,
+                'detection_count': 1,
+                'class_name': class_name,
+                'confidence': conf_value,
+                'is_alarm': is_alarm,
+            })
+
+            time.sleep(0.03)
+
+        try:
+            cap.release()
+        except Exception:
+            pass
+        if self.video_capture is cap:
+            self.video_capture = None
+
+        if self.is_running and self.inference_thread is threading.current_thread():
+            self.socketio.emit('inference_complete', {
+                'message': f'RTSP分类推理已停止，共处理 {frame_count} 帧'
+            })

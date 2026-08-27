@@ -94,7 +94,7 @@ export default function SetupWizard() {
           <div className="flex items-center justify-center gap-2">
             <p style={{ color: "hsl(var(--muted-foreground))" }}>首次启动配置</p>
             <span className="text-xs px-1.5 py-0.5 rounded" style={{ background: "hsl(var(--muted))", color: "hsl(var(--muted-foreground))" }}>
-              v0.0.5
+              v0.0.6
             </span>
           </div>
         </div>

@@ -1,7 +1,9 @@
 use serde::{Deserialize, Serialize};
 use std::process::Child;
 use std::sync::Mutex;
-use tauri::{Manager, State};
+use tauri::State;
+#[cfg(not(debug_assertions))]
+use tauri::Manager;
 
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
@@ -76,6 +78,7 @@ fn read_backend_env_value(app_dir: &str, key: &str) -> String {
     String::new()
 }
 
+#[cfg(not(debug_assertions))]
 fn copy_file(src: &std::path::Path, dst: &std::path::Path) -> Result<(), String> {
     if let Some(parent) = dst.parent() {
         std::fs::create_dir_all(parent)
@@ -86,6 +89,7 @@ fn copy_file(src: &std::path::Path, dst: &std::path::Path) -> Result<(), String>
     Ok(())
 }
 
+#[cfg(not(debug_assertions))]
 fn copy_dir_all(src: &std::path::Path, dst: &std::path::Path) -> Result<(), String> {
     std::fs::create_dir_all(dst)
         .map_err(|e| format!("创建目录失败 ({}): {}", dst.display(), e))?;
@@ -110,6 +114,7 @@ fn copy_dir_all(src: &std::path::Path, dst: &std::path::Path) -> Result<(), Stri
     Ok(())
 }
 
+#[cfg(not(debug_assertions))]
 fn sync_backend_runtime_dir(resource_dir: &std::path::Path, runtime_dir: &std::path::Path) -> Result<(), String> {
     let resource_names = [
         "app.py",
@@ -495,7 +500,7 @@ pub async fn check_for_updates() -> Result<UpdateInfo, String> {
 /// - Debug 构建（tauri dev）：CARGO_MANIFEST_DIR 的父目录（即项目根目录）
 /// - Release 构建：可执行文件旁边的目录
 #[tauri::command]
-pub fn get_app_dir(app: tauri::AppHandle) -> Result<String, String> {
+pub fn get_app_dir(_app: tauri::AppHandle) -> Result<String, String> {
     #[cfg(debug_assertions)]
     {
         // src-tauri/../  →  easy_infer_station/
@@ -509,12 +514,12 @@ pub fn get_app_dir(app: tauri::AppHandle) -> Result<String, String> {
     #[cfg(not(debug_assertions))]
     {
         // Tauri 将 "../xxx" 相对路径的资源打包到 resource_dir/_up_/ 下
-        let resource_dir = app
+        let resource_dir = _app
             .path()
             .resource_dir()
             .map_err(|e| format!("找不到资源目录: {}", e))?
             .join("_up_");
-        let runtime_dir = app
+        let runtime_dir = _app
             .path()
             .app_local_data_dir()
             .map_err(|e| format!("找不到本地数据目录: {}", e))?

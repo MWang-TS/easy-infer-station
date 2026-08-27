@@ -43,10 +43,20 @@ export function initSocket(port: number = 8080, apiToken?: string): Socket {
     image?: string;
     detection_count?: number;
     message?: string;
+    class_name?: string;
+    confidence?: number;
+    is_alarm?: boolean;
   }) => {
     if (data.image) {
       // 后端 _image_to_base64 已包含 "data:image/jpeg;base64," 前缀
       store.setCurrentFrame(data.image);
+    }
+    if (data.class_name) {
+      store.setClassificationResult({
+        className: data.class_name,
+        confidence: data.confidence ?? 0,
+        isAlarm: Boolean(data.is_alarm),
+      });
     }
     store.setInferring(false);
     if (data.message) store.addInferLog(data.message);
@@ -57,10 +67,20 @@ export function initSocket(port: number = 8080, apiToken?: string): Socket {
     frame?: number;
     fps?: number;
     detection_count?: number;
+    class_name?: string;
+    confidence?: number;
+    is_alarm?: boolean;
   }) => {
     // RTSP / 视频帧实时预览
     if (data.image) {
       store.setCurrentFrame(data.image);
+    }
+    if (data.class_name) {
+      store.setClassificationResult({
+        className: data.class_name,
+        confidence: data.confidence ?? 0,
+        isAlarm: Boolean(data.is_alarm),
+      });
     }
   });
 
@@ -98,6 +118,8 @@ export function initSocket(port: number = 8080, apiToken?: string): Socket {
     filename: string;
     image: string;
     detection_count: number;
+    class_name?: string;
+    confidence?: number;
     error?: string;
   }) => {
     store.addBatchResult({
@@ -107,9 +129,11 @@ export function initSocket(port: number = 8080, apiToken?: string): Socket {
       detectionCount: data.detection_count,
       index: data.index,
       error: data.error,
+      className: data.class_name,
+      confidence: data.confidence,
     });
     store.setBatchProgress({ current: data.index + 1, total: data.total });
-    store.addInferLog(`完成 (${data.index + 1}/${data.total}): ${data.filename} — ${data.error ?? `${data.detection_count} 个目标`}`);
+    store.addInferLog(`完成 (${data.index + 1}/${data.total}): ${data.filename} — ${data.error ?? (data.class_name ? `分类: ${data.class_name}` : `${data.detection_count} 个目标`)}`);
   });
 
   socket.on("batch_complete", (data: { total: number; processed?: number; message?: string }) => {
@@ -124,13 +148,17 @@ export function initSocket(port: number = 8080, apiToken?: string): Socket {
     count?: number;
     timestamp?: string;
     source_type?: string;
+    class_name?: string;
+    confidence?: number;
   }) => {
     if (data.filename) {
       store.addAlarmImage({
         id: Date.now().toString(),
         src: `http://127.0.0.1:${backendPort}/static/alarmimage/${data.filename}`,
         timestamp: data.timestamp ?? new Date().toLocaleTimeString(),
-        label: `${data.source_type ?? "报警"} (${data.count ?? 0}个目标)`,
+        label: data.class_name
+          ? `${data.source_type ?? "分类"} · ${data.class_name} (${((data.confidence ?? 0) * 100).toFixed(1)}%)`
+          : `${data.source_type ?? "报警"} (${data.count ?? 0}个目标)`,
       });
     }
   });
@@ -160,6 +188,7 @@ export function disconnectSocket() {
 
 export function emitStartInference(params: Record<string, unknown>) {
   const store = useAppStore.getState();
+  store.setClassificationResult(null);
   if (params.input_type === "images") {
     store.setInferring(true);  // 统一忙碌态，使按钮切换为"停止"
     store.setIsBatchInferring(true);
@@ -176,6 +205,7 @@ export function emitStopInference() {
   const store = useAppStore.getState();
   store.setInferring(false);
   store.setIsBatchInferring(false);
+  store.setClassificationResult(null);
   store.setBatchProgress(null);
   socket?.emit("stop_inference");
 }

@@ -220,6 +220,7 @@ def get_model_labels():
         # 加载模型获取标签
         model = YOLO(model_path)
         labels = model.names
+        task = getattr(model, 'task', 'detect')
         
         # 预加载模型到InferenceService（避免推理时加载延迟）
         print(f"预加载模型到InferenceService: {model_path}")
@@ -230,7 +231,8 @@ def get_model_labels():
             'success': True,
             'labels': labels,
             'count': len(labels),
-            'model_preloaded': True  # 标识模型已预加载
+            'model_preloaded': True,  # 标识模型已预加载
+            'task': task,  # detect / classify / pose / ...
         })
     except Exception as e:
         return jsonify({'success': False, 'message': f'加载模型标签失败: {str(e)}'}), 500
@@ -280,6 +282,44 @@ def get_first_frame():
         return jsonify({'success': True, 'frame': frame_b64})
     except Exception as e:
         return jsonify({'success': False, 'message': str(e)}), 500
+
+@main_bp.route('/api/roi/parse', methods=['GET'])
+def parse_roi_json():
+    """解析 ROI 多边形 JSON 文件，返回归一化 polygon 顶点列表。
+    兼容附件格式：{"ref_image": "...", "polygon": [[x,y], ...]}"""
+    import json
+    path = request.args.get('path', '')
+    if not path or not os.path.exists(path):
+        return jsonify({'success': False, 'message': 'ROI JSON 文件不存在'}), 400
+
+    try:
+        with open(path, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+    except Exception as e:
+        return jsonify({'success': False, 'message': f'读取JSON失败: {str(e)}'}), 400
+
+    if not isinstance(data, dict):
+        return jsonify({'success': False, 'message': 'JSON 顶层必须是对象'}), 400
+
+    poly = data.get('polygon')
+    if not isinstance(poly, list) or len(poly) < 3:
+        return jsonify({'success': False, 'message': 'JSON 中缺少有效的 polygon（至少 3 个顶点）'}), 400
+
+    pts = []
+    for p in poly:
+        if isinstance(p, (list, tuple)) and len(p) >= 2:
+            try:
+                pts.append([float(p[0]), float(p[1])])
+            except (TypeError, ValueError):
+                continue
+    if len(pts) < 3:
+        return jsonify({'success': False, 'message': 'polygon 顶点坐标无效'}), 400
+
+    return jsonify({
+        'success': True,
+        'polygon': pts,
+        'ref_image': data.get('ref_image', ''),
+    })
 
 @main_bp.route('/api/shutdown', methods=['POST'])
 def shutdown():

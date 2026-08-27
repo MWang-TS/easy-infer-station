@@ -43,6 +43,15 @@ export async function browseModelFile(): Promise<string | null> {
   return path;
 }
 
+/** 打开系统文件对话框，选择 ROI JSON 文件（取消返回 null）。 */
+export async function browseRoiJsonFile(): Promise<string | null> {
+  const result = await open({
+    multiple: false,
+    filters: [{ name: "ROI JSON (*.json)", extensions: ["json"] }],
+  });
+  return typeof result === "string" ? result : null;
+}
+
 export interface CondaEnv {
   name: string;
   path: string;
