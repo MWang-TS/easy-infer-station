@@ -4,7 +4,7 @@
 
 ![界面预览](doc/images/9db8a0e00b6a804c78f948f412d0f289.png)
 
-**版本**：v0.0.6 · **协议**：AGPL-3.0 · **联系作者**：gawain@tsagent.cc
+**版本**：v0.0.7 · **协议**：AGPL-3.0 · **联系作者**：gawain@tsagent.cc
 
 ---
 

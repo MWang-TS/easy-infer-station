@@ -2,13 +2,13 @@ import { io, Socket } from "socket.io-client";
 import { useAppStore } from "./store";
 
 let socket: Socket | null = null;
-let backendPort = 8080;
+let backendPort = 18080;
 
 export function getSocket(): Socket | null {
   return socket;
 }
 
-export function initSocket(port: number = 8080, apiToken?: string): Socket {
+export function initSocket(port: number = 18080, apiToken?: string): Socket {
   if (socket) {
     socket.disconnect();
   }

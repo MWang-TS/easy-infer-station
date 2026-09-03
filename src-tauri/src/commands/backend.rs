@@ -318,6 +318,7 @@ pub async fn start_backend(
             .args(["-u", "app.py"])
             .env("PORT", port.to_string())
             .env("PYTHONUNBUFFERED", "1")
+            .env("PYTHONIOENCODING", "utf-8")
             .current_dir(&app_dir)
             .stdout(log_file)
             .stderr(log_clone);
@@ -337,7 +338,9 @@ pub async fn start_backend(
     if let Some(ref mut child) = *guard {
         if let Ok(Some(status)) = child.try_wait() {
             *guard = None;
-            let log = std::fs::read_to_string(&log_path).unwrap_or_default();
+            let log = std::fs::read(&log_path)
+                .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
+                .unwrap_or_default();
             return Err(format!(
                 "Python 进程启动后立即退出（exit code: {:?}）\n\n输出:\n{}",
                 status.code(),
@@ -388,7 +391,8 @@ pub fn check_backend_alive(state: State<'_, BackendState>) -> bool {
 #[tauri::command]
 pub fn get_backend_log() -> String {
     let log_path = std::env::temp_dir().join("easy_infer_backend.log");
-    std::fs::read_to_string(log_path)
+    std::fs::read(&log_path)
+        .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
         .unwrap_or_else(|_| "(日志文件不存在)".to_string())
 }
 

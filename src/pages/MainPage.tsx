@@ -54,7 +54,7 @@ import {
 } from "@/lib/socket";
 import EnvManager from "@/components/EnvManager";
 
-const BACKEND_PORT = 8080;
+const BACKEND_PORT = 18080;
 
 // ─── 顶部状态栏 ───────────────────────────────────────────────
 function TopBar({
@@ -125,7 +125,7 @@ function TopBar({
             Easy Infer Station
           </span>
           <span className="text-xs px-1.5 py-0.5 rounded" style={{ background: "hsl(var(--muted))", color: "hsl(var(--muted-foreground))" }}>
-            v0.0.6
+            v0.0.7
           </span>
         </div>
 
@@ -2172,7 +2172,7 @@ export default function MainPage() {
 
   const fetchModels = async () => {
     try {
-      const resp = await fetch(`http://127.0.0.1:${config?.port ?? 8080}/api/models/list`, {
+      const resp = await fetch(`http://127.0.0.1:${config?.port ?? 18080}/api/models/list`, {
         headers: getAuthHeaders(),
       });
       const data = await resp.json();
@@ -2191,7 +2191,7 @@ export default function MainPage() {
     if (!modelPath) return;
     try {
       const resp = await fetch(
-        `http://127.0.0.1:${config?.port ?? 8080}/api/model/labels?model_path=${encodeURIComponent(modelPath)}`,
+        `http://127.0.0.1:${config?.port ?? 18080}/api/model/labels?model_path=${encodeURIComponent(modelPath)}`,
         { headers: getAuthHeaders() }
       );
       const data = await resp.json();
@@ -2287,7 +2287,7 @@ export default function MainPage() {
     if (!path) return;
     try {
       const resp = await fetch(
-        `http://127.0.0.1:${config?.port ?? 8080}/api/roi/parse?path=${encodeURIComponent(path)}`,
+        `http://127.0.0.1:${config?.port ?? 18080}/api/roi/parse?path=${encodeURIComponent(path)}`,
         { headers: getAuthHeaders() }
       );
       const data = await resp.json();

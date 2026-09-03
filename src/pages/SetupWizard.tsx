@@ -48,7 +48,7 @@ export default function SetupWizard() {
         envName: selected.name,
         pythonExe,
       },
-      port: 8080,
+      port: 18080,
       appDir,
     };
     setConfig(config);
@@ -94,7 +94,7 @@ export default function SetupWizard() {
           <div className="flex items-center justify-center gap-2">
             <p style={{ color: "hsl(var(--muted-foreground))" }}>首次启动配置</p>
             <span className="text-xs px-1.5 py-0.5 rounded" style={{ background: "hsl(var(--muted))", color: "hsl(var(--muted-foreground))" }}>
-              v0.0.6
+              v0.0.7
             </span>
           </div>
         </div>
@@ -337,7 +337,7 @@ export default function SetupWizard() {
                 </div>
                 <div className="flex justify-between text-sm">
                   <span style={{ color: "hsl(var(--muted-foreground))" }}>后端端口</span>
-                  <span style={{ color: "hsl(var(--foreground))" }}>8080</span>
+                  <span style={{ color: "hsl(var(--foreground))" }}>18080</span>
                 </div>
               </div>
 

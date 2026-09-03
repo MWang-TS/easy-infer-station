@@ -16,7 +16,7 @@ class Config:
     # 服务器配置
     SECRET_KEY = os.environ.get('SECRET_KEY') or 'infer-secret-key'
     DEBUG = os.environ.get('DEBUG', 'True').lower() == 'true'
-    PORT = int(os.environ.get('PORT', '8080'))  # 改为8080，常用的Web开发端口
+    PORT = int(os.environ.get('PORT', '18080'))  # 避开 Windows 保留端口段（8002-8101 含 8080）
     HOST = os.environ.get('HOST', '127.0.0.1')  # 改为127.0.0.1避免权限问题
 
     # 可选：API/Socket鉴权（未设置则不启用）
