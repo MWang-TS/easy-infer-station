@@ -1,4 +1,4 @@
-# 将最新 Release 产物同步到 Cloudflare R2
+﻿# 将最新 Release 产物同步到 Cloudflare R2
 #
 # 触发时机：Release 被 publish（即 release.yml 中 publish-release job 完成后）
 #
@@ -342,6 +342,16 @@ jobs:
               <span>© Easy Infer Station · <a href="https://github.com/{repo}" target="_blank">github.com/{repo}</a></span>
               <span>Updated {now}</span>
             </footer>
+          <script>
+          (function () {{
+            var PRODUCT = 'easy-infer-station';
+            var API = 'https://huomu-web.tensorsight.workers.dev/api/downloads/' + PRODUCT;
+            document.addEventListener('click', function (e) {{
+              var a = e.target && e.target.closest ? e.target.closest('a.file-row') : null;
+              if (a) fetch(API, {{ method: 'POST', keepalive: true }});
+            }});
+          }})();
+          </script>
           </body>
           </html>"""
 
