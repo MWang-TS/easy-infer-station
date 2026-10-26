@@ -17,6 +17,9 @@ from PIL import Image
 import base64
 import io
 
+from services import model_registry as registry
+from services import model_downloader
+
 class InferenceService:
     """推理服务类"""
     
@@ -32,28 +35,77 @@ class InferenceService:
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
         self.current_input_type = None
+        # 当前模型的任务（detect / segment / classify / pose / obb），由模型自身决定
+        self.current_task = None
+        # 模型信息缓存（家族 / 任务 / 类别数），供接口查询
+        self.model_info = {}
+
+    # ─── 任务与模型解析 ──────────────────────────────────────
+    def task(self) -> str:
+        """当前推理任务。以模型元数据为准，缺失时才退回 detect。"""
+        return self.current_task or registry.resolve_task(self.model)
+
+    def _ensure_model_file(self, model_ref: str):
+        """把「官方权重名」按需下载到 models/；本地路径原样返回。"""
+        def _progress(received, total):
+            try:
+                self.socketio.emit('model_download_progress', {
+                    'name': os.path.basename(str(model_ref)),
+                    'received': received,
+                    'total': total,
+                })
+            except Exception:
+                pass
+
+        return model_downloader.ensure_local(model_ref, _progress)
+
+    def model_summary(self) -> dict:
+        """模型信息（未加载时返回空壳）。"""
+        if not self.model or not self.model_path:
+            return {}
+        try:
+            info = registry.describe_model(self.model, self.model_path)
+        except Exception:
+            return dict(self.model_info or {})
+        info['model_path'] = self.model_path
+        info['device'] = self.model_device
+        self.model_info = info
+        return info
     
     def load_model(self, model_path):
         """预加载模型到内存"""
         try:
+            local_path = self._ensure_model_file(model_path)
+            if not local_path:
+                print(f"预加载模型失败: 找不到模型 {model_path}")
+                return False
+
             # 如果已经加载了相同的模型，跳过
-            if self.model and self.model_path == model_path:
-                print(f"模型已加载: {model_path}")
+            if self.model and self.model_path == local_path:
+                print(f"模型已加载: {local_path}")
                 return True
-            
-            print(f"开始加载模型: {model_path}")
-            self.model = YOLO(model_path)
+
+            print(f"开始加载模型: {local_path}")
+            model = YOLO(local_path)
             device_str = self._device_str(self.device)
-            self.model.to(device_str)
-            self.model_path = model_path
+            model.to(device_str)
+            self.model = model
+            self.model_path = local_path
             self.model_device = device_str
-            print(f"模型加载成功，使用设备: {device_str}")
+            self.current_task = registry.resolve_task(model)
+            self.model_info = registry.describe_model(model, local_path)
+            print(
+                f"模型加载成功，任务: {self.current_task}，"
+                f"类别数: {self.model_info.get('class_count')}，设备: {device_str}"
+            )
             return True
         except Exception as e:
             print(f"预加载模型失败: {str(e)}")
             self.model = None
             self.model_path = None
             self.model_device = None
+            self.current_task = None
+            self.model_info = {}
             return False
         
     def start_inference(self, params):
@@ -67,9 +119,23 @@ class InferenceService:
 
         input_type = params.get('input_type', 'image')
         model_path = params.get('model_path')
-        if not model_path or not os.path.exists(model_path):
-            self.socketio.emit('inference_error', {'message': '模型文件不存在'})
+        if not model_path:
+            self.socketio.emit('inference_error', {'message': '未选择模型'})
             return
+
+        # 支持「官方权重名」：yolo11n.pt / yolo26n-pose.pt 之类，缺失时自动下载
+        try:
+            local_model = self._ensure_model_file(model_path)
+        except Exception as e:
+            self.socketio.emit('inference_error', {'message': f'模型下载失败: {e}'})
+            return
+        if not local_model or not os.path.exists(local_model):
+            self.socketio.emit('inference_error', {'message': f'模型文件不存在: {model_path}'})
+            return
+
+        if local_model != model_path:
+            params = dict(params)
+            params['model_path'] = local_model
 
         input_path = params.get('input_path', params.get('input_source', ''))
         if input_type not in ['rtsp', 'images'] and not os.path.exists(input_path):
@@ -153,12 +219,19 @@ class InferenceService:
                 })
             if not self.model or self.model_path != model_path:
                 self.socketio.emit('inference_status', {'message': f'正在加载模型: {os.path.basename(model_path)}'})
-                self.model = YOLO(model_path)
-                self.model.to(device_str)
+                model = YOLO(model_path)
+                model.to(device_str)
+                self.model = model
                 self.model_path = model_path
                 self.model_device = device_str
+                self.current_task = registry.resolve_task(model)
+                self.model_info = registry.describe_model(model, model_path)
+                info = self.model_info
                 self.socketio.emit('inference_status', {
-                    'message': f'模型加载成功，使用设备: {device_str}'
+                    'message': (
+                        f"模型加载成功（{info.get('family_label')} · {info.get('task_label')}），"
+                        f"类别数 {info.get('class_count')}，设备: {device_str}"
+                    )
                 })
             else:
                 if self.model_device != device_str:
@@ -167,22 +240,28 @@ class InferenceService:
                     self.socketio.emit('inference_status', {
                         'message': f'推理设备已切换为: {device_str}'
                     })
+                if not self.current_task:
+                    self.current_task = registry.resolve_task(self.model)
                 self.socketio.emit('inference_status', {
-                    'message': f'使用预加载模型，设备: {device_str}'
+                    'message': f"使用预加载模型（{self.current_task}），设备: {device_str}"
                 })
 
-            # 根据输入类型执行推理
+            # 把任务类型同步给前端（模型决定，前端只做展示）
+            self.socketio.emit('model_info', self.model_summary())
+
+            # 根据输入类型 + 模型任务执行推理
+            task = self.task()
             if input_type == 'image':
                 self._inference_on_image(params)
             elif input_type == 'images':
                 self._inference_on_images(params)
             elif input_type == 'video':
-                if params.get('task_type') == 'classify':
+                if task == 'classify':
                     self._inference_on_video_classify(params)
                 else:
                     self._inference_on_video(params)
             elif input_type == 'rtsp':
-                if params.get('task_type') == 'classify':
+                if task == 'classify':
                     self._inference_on_rtsp_classify(params)
                 else:
                     self._inference_on_rtsp(params)
@@ -222,16 +301,15 @@ class InferenceService:
                     self.result_video_writer = None
     
     def _inference_on_image(self, params):
-        """图片推理（支持目标检测 / 分类）"""
+        """图片推理（任务由模型决定：detect / segment / pose / obb / classify）"""
         input_path = params.get('input_path') or params.get('input_source', '')
         confidence = params.get('confidence', 0.5)
         iou_threshold = params.get('iou', params.get('iou_threshold', 0.45))
-        pose_mode = params.get('pose_mode_enabled', False)
         selected_labels = params.get('selected_labels', [])
-        task_type = params.get('task_type', 'detect')
+        task_type = self.task()
         roi_polygon = self._resolve_roi_polygon(params)
         
-        self.socketio.emit('inference_status', {'message': '开始图片推理...'})
+        self.socketio.emit('inference_status', {'message': f'开始图片推理（{task_type}）...'})
         
         # ── 分类模式 ──
         if task_type == 'classify':
@@ -268,41 +346,27 @@ class InferenceService:
             self.socketio.emit('inference_complete', {'message': '图片分类完成'})
             return
         
-        # ── 检测模式 ──
-        # 执行推理
-        if pose_mode:
-            results = self.model(
-                input_path,
-                conf=confidence,
-                iou=iou_threshold,
-                task='pose',
-                device=self._device_str(self.device)
-            )
-        else:
-            results = self.model(
-                input_path,
-                conf=confidence,
-                iou=iou_threshold,
-                device=self._device_str(self.device)
-            )
+        # ── 检测类模式（detect / segment / pose / obb 走同一套框 + 可选掩膜/关键点）──
+        # 不再传 task='pose'：任务由模型自身决定，强行覆盖会加载错误的 head。
+        results = self.model(
+            input_path,
+            conf=confidence,
+            iou=iou_threshold,
+            device=self._device_str(self.device)
+        )
         
         # 处理结果
         for result in results:
-            # 过滤标签
-            if not pose_mode and selected_labels and len(result.boxes.cls) > 0:
-                keep_mask = torch.tensor([int(cls.item()) in selected_labels for cls in result.boxes.cls])
-                result.boxes = result.boxes[keep_mask]
+            # 按类别过滤（boxes / obb 都处理；pose 模型只有 person 一类，不做过滤）
+            if task_type != 'pose':
+                registry.filter_by_labels(result, selected_labels)
             
-            # 获取原始图像
-            original_image = cv2.imread(input_path)
-            
-            # 如果启用ROI，ROI内的框显示为红色；否则用YOLO默认颜色
+            # 如果启用ROI，ROI内的框显示为红色；否则用YOLO默认颜色（含掩膜/旋转框/骨架）
             if roi_polygon is not None:
                 annotated_image, detection_count = self._annotate_with_roi_polygon(result, roi_polygon)
             else:
-                # 不启用ROI时，绘制所有检测框
                 annotated_image = result.plot()
-                detection_count = len(result.boxes) if hasattr(result, 'boxes') and result.boxes is not None else 0
+                detection_count = registry.count_items(result)
             
             # 保存结果
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -319,7 +383,9 @@ class InferenceService:
                 'result_path': result_path,
                 'result_filename': result_filename,
                 'detection_count': detection_count,
-                'message': f'检测完成，发现 {detection_count} 个目标'
+                'task': task_type,
+                'class_names': self._result_class_summary(result),
+                'message': f'{registry.TASK_LABELS.get(task_type, task_type)}完成，发现 {detection_count} 个目标'
             })
         
         self.socketio.emit('inference_complete', {'message': '图片推理完成'})
@@ -329,9 +395,8 @@ class InferenceService:
         input_paths = params.get('input_paths', [])
         confidence = params.get('confidence', 0.5)
         iou_threshold = params.get('iou', params.get('iou_threshold', 0.45))
-        pose_mode = params.get('pose_mode_enabled', False)
         selected_labels = params.get('selected_labels', [])
-        task_type = params.get('task_type', 'detect')
+        task_type = self.task()
         roi_polygon = self._resolve_roi_polygon(params)
 
         total = len(input_paths)
@@ -370,27 +435,20 @@ class InferenceService:
                 continue
 
             try:
-                if pose_mode:
-                    results = self.model(
-                        input_path, conf=confidence, iou=iou_threshold,
-                        task='pose', device=self._device_str(self.device)
-                    )
-                else:
-                    results = self.model(
-                        input_path, conf=confidence, iou=iou_threshold,
-                        device=self._device_str(self.device)
-                    )
+                results = self.model(
+                    input_path, conf=confidence, iou=iou_threshold,
+                    device=self._device_str(self.device)
+                )
 
                 for result in results:
-                    if not pose_mode and selected_labels and len(result.boxes.cls) > 0:
-                        keep_mask = torch.tensor([int(cls.item()) in selected_labels for cls in result.boxes.cls])
-                        result.boxes = result.boxes[keep_mask]
+                    if task_type != 'pose':
+                        registry.filter_by_labels(result, selected_labels)
 
                     if roi_polygon is not None:
                         annotated_image, detection_count = self._annotate_with_roi_polygon(result, roi_polygon)
                     else:
                         annotated_image = result.plot()
-                        detection_count = len(result.boxes) if hasattr(result, 'boxes') and result.boxes is not None else 0
+                        detection_count = registry.count_items(result)
 
                     image_base64 = self._image_to_base64(annotated_image)
                     self.socketio.emit('batch_item_result', {
@@ -420,11 +478,11 @@ class InferenceService:
                 'message': f'批量推理完成，共处理 {processed}/{total} 张图片',
             })
     def _inference_on_video(self, params):
-        """视频推理"""
+        """视频推理（任务由模型决定）"""
         input_path = params.get('input_path') or params.get('input_source', '')
         confidence = params.get('confidence', 0.5)
         iou_threshold = params.get('iou', params.get('iou_threshold', 0.45))
-        pose_mode = params.get('pose_mode_enabled', False)
+        task_type = self.task()
         selected_labels = params.get('selected_labels', [])
         roi_polygon = self._resolve_roi_polygon(params)
         tracking_enabled = params.get('tracking_enabled', False)
@@ -485,16 +543,8 @@ class InferenceService:
             if should_inference:
                 inference_count += 1
                 
-                # 执行推理
-                if pose_mode:
-                    results = self.model(
-                        frame,
-                        conf=confidence,
-                        iou=iou_threshold,
-                        task='pose',
-                        device=self._device_str(self.device)
-                    )
-                elif tracking_enabled:
+                # 执行推理（任务由模型决定，不传 task 覆盖）
+                if tracking_enabled and task_type in ('detect', 'segment', 'obb'):
                     results = self.model.track(
                         frame,
                         conf=confidence,
@@ -513,10 +563,9 @@ class InferenceService:
                 
                 # 处理结果
                 for result in results:
-                    # 过滤标签
-                    if not pose_mode and selected_labels and len(result.boxes.cls) > 0:
-                        keep_mask = torch.tensor([int(cls.item()) in selected_labels for cls in result.boxes.cls])
-                        result.boxes = result.boxes[keep_mask]
+                    # 过滤标签（boxes / obb 均处理；pose 只有 person 一类）
+                    if task_type != 'pose':
+                        registry.filter_by_labels(result, selected_labels)
                     
                     # 绘制检测框（ROI内红色，ROI外默认颜色）
                     if roi_polygon is not None:
@@ -531,35 +580,29 @@ class InferenceService:
                     except Exception:
                         pass
                     
-                    # 提取检测框数据（归一化坐标）
+                    # 提取检测框数据（归一化坐标，兼容 boxes / obb）
                     detections = []
                     detection_count = 0
-                    
-                    if hasattr(result, 'boxes') and result.boxes is not None and len(result.boxes) > 0:
-                        h, w = frame.shape[:2]
-                        
-                        for box, conf, cls in zip(result.boxes.xyxy, result.boxes.conf, result.boxes.cls):
-                            x1, y1, x2, y2 = box.cpu().numpy()
-                            detection = {
-                                'x1': float(x1 / w),
-                                'y1': float(y1 / h),
-                                'x2': float(x2 / w),
-                                'y2': float(y2 / h),
-                                'confidence': float(conf.cpu().numpy()),
-                                'class': int(cls.cpu().numpy()),
-                                'class_name': self._get_class_name(int(cls.cpu().numpy()))
-                            }
-                            if roi_polygon is not None:
-                                center_x = (detection['x1'] + detection['x2']) / 2
-                                center_y = (detection['y1'] + detection['y2']) / 2
-                                if self._point_in_polygon(center_x, center_y, roi_polygon):
-                                    detections.append(detection)
-                                    detection_count += 1
-                            else:
+
+                    for item in registry.iter_items(result):
+                        detection = {
+                            'x1': item['box'][0],
+                            'y1': item['box'][1],
+                            'x2': item['box'][2],
+                            'y2': item['box'][3],
+                            'confidence': item['confidence'],
+                            'class': item['class_id'],
+                            'class_name': item['class_name'],
+                        }
+                        if item['quad'] is not None:
+                            detection['quad'] = [list(p) for p in item['quad']]
+                        if roi_polygon is not None:
+                            if self._point_in_polygon(item['center'][0], item['center'][1], roi_polygon):
                                 detections.append(detection)
                                 detection_count += 1
-                    else:
-                        detection_count = 0
+                        else:
+                            detections.append(detection)
+                            detection_count += 1
                     
                     # 缓存本次检测结果
                     last_detections = detections
@@ -657,7 +700,7 @@ class InferenceService:
         rtsp_url = params.get('input_path') or params.get('input_source', '')
         confidence = params.get('confidence', 0.5)
         iou_threshold = params.get('iou', params.get('iou_threshold', 0.45))
-        pose_mode = params.get('pose_mode_enabled', False)
+        task_type = self.task()
         selected_labels = params.get('selected_labels', [])
         roi_polygon = self._resolve_roi_polygon(params)
         tracking_enabled = params.get('tracking_enabled', False)
@@ -691,16 +734,8 @@ class InferenceService:
             
             frame_count += 1
             
-            # 执行推理
-            if pose_mode:
-                results = self.model(
-                    frame,
-                    conf=confidence,
-                    iou=iou_threshold,
-                    task='pose',
-                    device=self._device_str(self.device)
-                )
-            elif tracking_enabled:
+            # 执行推理（任务由模型决定）
+            if tracking_enabled and task_type in ('detect', 'segment', 'obb'):
                 results = self.model.track(
                     frame,
                     conf=confidence,
@@ -719,18 +754,17 @@ class InferenceService:
             
             # 处理结果
             for result in results:
-                # 过滤标签
-                if not pose_mode and selected_labels and len(result.boxes.cls) > 0:
-                    keep_mask = torch.tensor([int(cls.item()) in selected_labels for cls in result.boxes.cls])
-                    result.boxes = result.boxes[keep_mask]
+                # 过滤标签（boxes / obb 均处理）
+                if task_type != 'pose':
+                    registry.filter_by_labels(result, selected_labels)
                 
                 # 如果启用ROI，ROI内的框显示为红色；否则用YOLO默认颜色
                 if roi_polygon is not None:
                     annotated_frame, detection_count = self._annotate_with_roi_polygon(result, roi_polygon)
                 else:
-                    # 不启用ROI时，绘制所有检测框
+                    # 不启用ROI时，绘制全部结果（含掩膜 / 旋转框 / 骨架）
                     annotated_frame = result.plot()
-                    detection_count = len(result.boxes) if hasattr(result, 'boxes') and result.boxes is not None else 0
+                    detection_count = registry.count_items(result)
                 
                 # 报警图生成逻辑
                 if detection_count > 0:  # 有目标时生成报警图
@@ -812,70 +846,19 @@ class InferenceService:
         
         return f"data:image/jpeg;base64,{img_str}"
     
-    def _count_detections_in_roi(self, result, roi_coords):
-        """计算ROI区域内的检测数量"""
-        if not hasattr(result, 'boxes') or result.boxes is None or len(result.boxes) == 0:
-            return 0
-        
-        x1, y1, x2, y2 = roi_coords
-        count = 0
-        
-        # 遍历所有检测框
-        for box in result.boxes.xyxyn:  # xyxyn是归一化坐标
-            bx1, by1, bx2, by2 = box[:4].cpu().numpy()
-            
-            # 计算框的中心点
-            center_x = (bx1 + bx2) / 2
-            center_y = (by1 + by2) / 2
-            
-            # 判断中心点是否在ROI内
-            if x1 <= center_x <= x2 and y1 <= center_y <= y2:
-                count += 1
-        
-        return count
-    
-    def _annotate_with_roi(self, result, roi_coords):
-        """绘制检测框：ROI内的框用红色，ROI外保持YOLO默认颜色。
-        返回 (annotated_frame, inside_count)。"""
-        annotated = result.plot()
-        inside_count = 0
-
-        if not (hasattr(result, 'boxes') and result.boxes is not None and len(result.boxes) > 0):
-            return annotated, 0
-
-        x1_roi, y1_roi, x2_roi, y2_roi = roi_coords
-
-        for i in range(len(result.boxes)):
-            box_n = result.boxes.xyxyn[i].cpu().numpy()
-            cx = (float(box_n[0]) + float(box_n[2])) / 2
-            cy = (float(box_n[1]) + float(box_n[3])) / 2
-
-            if x1_roi <= cx <= x2_roi and y1_roi <= cy <= y2_roi:
-                inside_count += 1
-                box_px = result.boxes.xyxy[i].cpu().numpy()
-                bx1, by1 = int(box_px[0]), int(box_px[1])
-                bx2, by2 = int(box_px[2]), int(box_px[3])
-                conf = float(result.boxes.conf[i].cpu().numpy())
-                cls_id = int(result.boxes.cls[i].cpu().numpy())
-                names = result.names if hasattr(result, 'names') and result.names else {}
-                cls_name = names.get(cls_id, str(cls_id))
-                label = f"{cls_name} {conf:.2f}"
-
-                # 用较粗红框覆盖YOLO默认颜色
-                cv2.rectangle(annotated, (bx1, by1), (bx2, by2), (0, 0, 255), 3)
-                (tw, th), baseline = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
-                cv2.rectangle(annotated, (bx1, by1 - th - baseline - 2),
-                              (bx1 + tw + 2, by1), (0, 0, 255), -1)
-                cv2.putText(annotated, label, (bx1 + 1, by1 - baseline - 1),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
-
-        return annotated, inside_count
-    
     def _get_class_name(self, class_id):
         """获取类别名称"""
         if self.model and hasattr(self.model, 'names'):
             return self.model.names.get(class_id, f'Class {class_id}')
         return f'Class {class_id}'
+
+    def _result_class_summary(self, result) -> dict:
+        """统计各类别数量：{类名: 个数}，供前端做结果说明。"""
+        summary = {}
+        for item in registry.iter_items(result):
+            name = item['class_name']
+            summary[name] = summary.get(name, 0) + 1
+        return summary
 
     # ─── ROI 多边形解析 ──────────────────────────────────────
     def _resolve_roi_polygon(self, params):
@@ -883,7 +866,7 @@ class InferenceService:
         优先级：前端传入的 roi_polygon > roi_json_path 文件 > 旧矩形 roi_coords。
         未启用 ROI 或无有效数据时返回 None（整图）。
         分类任务下，只要提供了 ROI 数据就直接应用（不依赖 roi_enabled 开关）。"""
-        task_type = params.get('task_type', 'detect')
+        task_type = self.task()
         roi_enabled = params.get('roi_enabled', False)
         if not roi_enabled and task_type != 'classify':
             return None
@@ -1042,43 +1025,60 @@ class InferenceService:
         })
 
     def _annotate_with_roi_polygon(self, result, polygon_norm):
-        """绘制检测框：ROI 多边形内的框用红色，并在图上绘制多边形轮廓。
-        返回 (annotated_frame, inside_count)。"""
+        """绘制结果：ROI 多边形内的目标用红色描边，并画出多边形轮廓。
+
+        同时兼容三种几何形状：
+        - 普通框（detect / segment / pose）→ 轴对齐矩形
+        - 旋转框（obb）→ 4 角点折线
+        掩膜与骨架仍由 `result.plot()` 负责，这里只做 ROI 内高亮与中文安全的标签。
+        返回 (annotated_frame, inside_count)。
+        """
         annotated = result.plot()
         inside_count = 0
-
-        if not (hasattr(result, 'boxes') and result.boxes is not None and len(result.boxes) > 0):
-            return annotated, 0
 
         h, w = annotated.shape[:2]
         pts = np.array(
             [[int(round(x * w)), int(round(y * h))] for x, y in polygon_norm],
             dtype=np.int32
         )
+        # 先画 ROI 轮廓：即使没有目标，用户也能看到区域位置
         cv2.polylines(annotated, [pts], True, (0, 230, 118), 2)
 
-        for i in range(len(result.boxes)):
-            box_n = result.boxes.xyxyn[i].cpu().numpy()
-            cx = (float(box_n[0]) + float(box_n[2])) / 2
-            cy = (float(box_n[1]) + float(box_n[3])) / 2
+        for item in registry.iter_items(result):
+            cx, cy = item['center']
+            if not self._point_in_polygon(cx, cy, polygon_norm):
+                continue
+            inside_count += 1
 
-            if self._point_in_polygon(cx, cy, polygon_norm):
-                inside_count += 1
-                box_px = result.boxes.xyxy[i].cpu().numpy()
-                bx1, by1 = int(box_px[0]), int(box_px[1])
-                bx2, by2 = int(box_px[2]), int(box_px[3])
-                conf = float(result.boxes.conf[i].cpu().numpy())
-                cls_id = int(result.boxes.cls[i].cpu().numpy())
-                names = result.names if hasattr(result, 'names') and result.names else {}
-                cls_name = names.get(cls_id, str(cls_id))
-                label = f"{cls_name} {conf:.2f}"
+            if item['quad']:
+                quad = np.array(
+                    [[int(round(px * w)), int(round(py * h))] for px, py in item['quad']],
+                    dtype=np.int32
+                )
+                cv2.polylines(annotated, [quad], True, (0, 0, 255), 3)
+                anchor_x = int(quad[:, 0].min())
+                anchor_y = int(quad[:, 1].min())
+            else:
+                bx1, by1, bx2, by2 = item['box']
+                px1, py1 = int(bx1 * w), int(by1 * h)
+                px2, py2 = int(bx2 * w), int(by2 * h)
+                cv2.rectangle(annotated, (px1, py1), (px2, py2), (0, 0, 255), 3)
+                anchor_x, anchor_y = px1, py1
 
-                cv2.rectangle(annotated, (bx1, by1), (bx2, by2), (0, 0, 255), 3)
-                (tw, th), baseline = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
-                cv2.rectangle(annotated, (bx1, by1 - th - baseline - 2),
-                              (bx1 + tw + 2, by1), (0, 0, 255), -1)
-                cv2.putText(annotated, label, (bx1 + 1, by1 - baseline - 1),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+            label = f"{item['class_name']} {item['confidence']:.2f}"
+            (tw, th), baseline = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
+            cv2.rectangle(
+                annotated,
+                (anchor_x, anchor_y - th - baseline - 2),
+                (anchor_x + tw + 2, anchor_y),
+                (0, 0, 255),
+                -1,
+            )
+            cv2.putText(
+                annotated, label,
+                (anchor_x + 1, anchor_y - baseline - 1),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1,
+            )
 
         return annotated, inside_count
 

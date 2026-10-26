@@ -172,6 +172,24 @@ export function initSocket(port: number = 18080, apiToken?: string): Socket {
     store.setSystemInfo(data);
   });
 
+  // 官方权重下载进度（每 25% 打一条日志，避免刷屏）
+  let lastBucket = -1;
+  socket.on("model_download_progress", (data: {
+    name?: string;
+    received?: number;
+    total?: number;
+  }) => {
+    const total = Number(data.total) || 0;
+    const received = Number(data.received) || 0;
+    if (!total) return;
+    const pct = Math.floor((received / total) * 100);
+    const bucket = Math.floor(pct / 25);
+    if (bucket <= lastBucket) return;
+    lastBucket = bucket;
+    store.addInferLog(`下载模型 ${data.name ?? ""} ${pct}%`);
+    if (pct >= 100) lastBucket = -1;
+  });
+
   socket.on("connect_error", (err: Error) => {
     store.addInferLog(`连接错误: ${err.message}`);
   });
@@ -188,6 +206,11 @@ export function disconnectSocket() {
 
 export function emitStartInference(params: Record<string, unknown>) {
   const store = useAppStore.getState();
+  // 未连接时不能进入「推理中」：否则按钮永久卡在「停止」，用户无法恢复
+  if (!socket || !socket.connected) {
+    store.addInferLog("未连接到推理服务，请等待后端就绪后重试");
+    return;
+  }
   store.setClassificationResult(null);
   if (params.input_type === "images") {
     store.setInferring(true);  // 统一忙碌态，使按钮切换为"停止"
@@ -209,5 +232,4 @@ export function emitStopInference() {
   store.setBatchProgress(null);
   socket?.emit("stop_inference");
 }
-
 export { backendPort };

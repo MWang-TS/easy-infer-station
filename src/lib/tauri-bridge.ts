@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import { open } from "@tauri-apps/plugin-dialog";
+import { open, save } from "@tauri-apps/plugin-dialog";
 
 const LAST_INPUT_PATH_KEY = "easyolo_last_input_path";
 const LAST_MODEL_PATH_KEY = "easyolo_last_model_path";
@@ -56,6 +56,8 @@ export interface CondaEnv {
   name: string;
   path: string;
   python_version: string;
+  /** 检测到的 ultralytics 版本；低于 8.3 无法加载 YOLO11，低于 8.4 无法加载 YOLO26/27 */
+  ultralytics_version?: string;
   missing_packages: string[];
   is_valid: boolean;
 }
@@ -117,6 +119,69 @@ export function checkBackendAlive(): Promise<boolean> {
 /** 读取 Python 后端的输出日志（用于启动失败诊断） */
 export function getBackendLog(): Promise<string> {
   return invoke<string>("get_backend_log");
+}
+
+// ─── 依赖清单导出 ───────────────────────────────────────────────
+//
+// 场景：用户机器上还没有满足要求的 conda 环境时，需要导出一份安装清单，
+// 拿到 Easy Conda 里导入安装。清单来自**编译期内嵌**的 requirements.txt，
+// 因此不依赖 Python 后端是否已启动。
+
+export interface DepItem {
+  name: string;
+  /** 版本约束原文，如 `==8.2.89` / `>=2.0.0`；未指定时为空串。 */
+  spec: string;
+  /** 完整规格，如 `ultralytics==8.2.89`。 */
+  requirement: string;
+}
+
+export interface DepManifest {
+  python_version: string;
+  env_name: string;
+  channels: string[];
+  packages: DepItem[];
+  count: number;
+  app_version: string;
+  notes: string[];
+}
+
+/** 读取依赖清单（用于界面展示）。 */
+export function getDependencyManifest(): Promise<DepManifest> {
+  return invoke<DepManifest>("get_dependency_manifest");
+}
+
+/** 生成 environment.yml 文本（复制用）。 */
+export function renderEnvironmentYml(): Promise<string> {
+  return invoke<string>("render_environment_yml");
+}
+
+/** 生成 requirements.txt 文本（复制用）。 */
+export function renderRequirementsTxt(): Promise<string> {
+  return invoke<string>("render_requirements_txt");
+}
+
+/** 弹出保存对话框并写入 environment.yml，返回保存路径（取消返回 null）。 */
+export async function saveEnvironmentYml(
+  defaultName = "easy-infer-station-env.yml"
+): Promise<string | null> {
+  const path = await save({
+    defaultPath: defaultName,
+    filters: [{ name: "Conda 环境清单", extensions: ["yml", "yaml"] }],
+  });
+  if (!path) return null;
+  return invoke<string>("export_environment_yml", { destination: path });
+}
+
+/** 弹出保存对话框并写入 requirements.txt，返回保存路径（取消返回 null）。 */
+export async function saveRequirementsTxt(
+  defaultName = "requirements.txt"
+): Promise<string | null> {
+  const path = await save({
+    defaultPath: defaultName,
+    filters: [{ name: "pip 依赖清单", extensions: ["txt"] }],
+  });
+  if (!path) return null;
+  return invoke<string>("export_requirements_txt", { destination: path });
 }
 
 export interface UpdateInfo {

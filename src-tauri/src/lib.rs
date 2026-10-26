@@ -1,6 +1,7 @@
 mod commands;
 
 use commands::backend::{self, BackendState};
+use commands::manifest;
 use std::sync::Mutex;
 use tauri::Manager;
 
@@ -23,6 +24,11 @@ pub fn run() {
             backend::get_backend_client_config,
             backend::get_app_dir,
             backend::check_for_updates,
+            manifest::get_dependency_manifest,
+            manifest::render_environment_yml,
+            manifest::render_requirements_txt,
+            manifest::export_environment_yml,
+            manifest::export_requirements_txt,
         ])
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::Destroyed = event {

@@ -4,7 +4,7 @@
 
 ![界面预览](doc/images/9db8a0e00b6a804c78f948f412d0f289.png)
 
-**版本**：v0.0.7 · **协议**：AGPL-3.0 · **联系作者**：gawain@tsagent.cc
+**版本**：v0.1.0 · **协议**：AGPL-3.0 · **联系作者**：gawain@tsagent.cc
 
 ---
 
@@ -13,14 +13,17 @@
 - 🚀 **多输入源**：单张图片、批量图片、视频文件、RTSP 流
 - 🖼️ **批量推理**：多图一次性选入，依次推理，结果以画廊形式展示
 - 🔍 **画廊查看器**：点击图片进入全屏灯箱，支持缩放（滚轮/按钮）、拖拽平移、前进后退
-- 🎯 **目标检测**：支持 YOLOv8 / YOLO11 系列及自定义 `.pt` 模型
-- 🏃 **姿态检测**：支持 YOLO-Pose，含摔倒检测
+- 🎯 **目标检测**：支持 YOLOv8 / YOLO11 / YOLO26（含后续 YOLO27）及其它 Ultralytics 模型，也支持自定义 `.pt`
+- 🧩 **多任务**：目标检测 / 实例分割 / 姿态估计 / 图像分类 / 旋转框（OBB）
+  任务由模型文件自身决定，装上对应权重即可，无需切换任何开关
+- ⬇️ **内置模型下载**：面板内一键拉取 YOLO26 / YOLO11 / YOLOv8 官方权重（含 detect / seg / pose / cls / obb）
 - 🗂️ **自定义模型**：文件浏览器加载任意本地 `.pt` 文件，自动读取类别标签
 - 📊 **实时推流**：Socket.IO 实时传输推理帧（RTSP / 视频模式）
 - 🔧 **参数调节**：置信度阈值、IoU 阈值、标签过滤、推理设备（CPU / GPU）
 - 📐 **ROI 区域**：画布交互式绘制感兴趣区域，支持取反报警
 - 🚨 **报警截图**：RTSP 模式下自动截图保存报警帧
 - 💪 **GPU 加速**：自动检测 CUDA，优先使用 GPU 推理
+- ☕ **自愿打赏**：内置支付宝打赏入口（payment-server 实时下单，打赏不解锁也不限制任何功能）
 - 🔒 **安全**：后端只监听 127.0.0.1，CORS 限定本机 Tauri/Vite 来源
 
 ---
@@ -119,6 +122,11 @@ python -c "from ultralytics import YOLO; print('ultralytics OK')"
 
 ## 首次启动配置
 
+> **没有现成的 conda 环境？** 在配置向导的「选择 Conda 环境」页点击**导出安装清单（environment.yml）**，
+> 然后在 [Easy Conda](https://github.com/MWang-TS/easy-conda)（或其它 conda 工具）中「环境 → 导入」该文件，
+> 即可一次性装好 Python 3.10 与全部依赖；也可手动执行 `conda env create -f easy-infer-station-env.yml`。
+> 随时可在「系统管理 → 依赖」查看清单内容并重新导出。
+
 1. 启动 Easy Infer Station，自动弹出**配置向导**
 2. 点击"扫描环境"，等待扫描完成
 3. 选择上一步创建的 `yolo-infer` 环境（绿色标记表示依赖完整）
@@ -171,11 +179,45 @@ python -c "from ultralytics import YOLO; print('ultralytics OK')"
 
 | 场景 | 推荐模型 |
 |------|----------|
-| 速度优先（边缘设备 / CPU） | `yolov8n.pt` |
-| 精度与速度均衡 | `yolov8m.pt` |
-| 姿态估计 / 摔倒检测 | `yolov8n-pose.pt` |
-| 高精度姿态 | `yolov8m-pose.pt` |
+| 速度优先（边缘设备 / CPU） | `yolo11n.pt` / `yolo26n.pt` |
+| 精度与速度均衡 | `yolo11m.pt` / `yolo26m.pt` |
+| 实例分割 | `yolo11n-seg.pt` / `yolo26n-seg.pt` |
+| 姿态估计 / 摔倒检测 | `yolo11n-pose.pt` / `yolo26n-pose.pt` |
+| 图像分类 | `yolo11n-cls.pt` / `yolo26n-cls.pt` |
+| 旋转框（航拍 / 文档） | `yolo11n-obb.pt` / `yolo26n-obb.pt` |
+| 旧版兼容 | `yolov8n.pt` 系列 |
 | 自定义业务场景 | 自行训练的 `.pt` 文件 |
+
+> 模型下拉框右侧的 ⬇ 按钮可直接下载上述官方权重到 `models/` 目录。
+> 任务类型（检测/分割/姿态/分类/OBB）由模型自身决定，左侧面板只做展示。
+>
+> 加载 YOLO26 / YOLO27 需要 `ultralytics >= 8.4.0`（YOLO11 需 `>= 8.3.0`）；
+> 环境管理页会直接显示每个环境检测到的 ultralytics 版本。
+> YOLO27 官方尚未发布权重（文档已预览），发布后无需升级本软件，直接选用即可。
+
+### 模型下载源
+
+国内直连 GitHub 的 release 资产通常只有 20~30 KB/s，一个 5MB 的 `n` 级权重都要几分钟。
+下载面板顶部可以切换下载源（选择会被记住）：
+
+| 下载源 | 说明 |
+|--------|------|
+| **自动（国内优先）** | 默认。先用魔搭镜像，该镜像没有的文件自动回落官方 GitHub |
+| **魔搭 ModelScope** | 国内直连，实测 400+ KB/s。由 Ultralytics 官方账号同步，权重与官方数值一致（`state_dict` 哈希相同，仅 zip 打包元数据不同） |
+| **GitHub 官方** | 官方 release 原始地址，国内可能很慢甚至超时 |
+| **第三方加速** | 经 `ghfast.top` / `gh-proxy.com` 代理，速度快但属第三方中间人；`.pt` 是 pickle 容器（加载即执行代码），请自行评估 |
+
+魔搭镜像的任务覆盖情况（未覆盖的组合请用「自动」）：
+
+| 家族 | detect | segment | pose | classify | obb |
+|------|:---:|:---:|:---:|:---:|:---:|
+| YOLO26 | ✅ | ✅ | ✅ | ✅ | ✅ |
+| YOLO11 | ✅ | ✅ | ✅ | — | — |
+| YOLOv8 | ✅ | — | — | — | — |
+
+> 无论走哪个源，下载完成后都会校验文件确实是 torch 的 zip 容器（魔数 + 体积 + zip 可读），
+> 镜像站返回的 HTML 错误页或被截断的半截文件会被直接拒绝。
+> 内网 / 自建镜像场景仍可设 `EIS_MODEL_MIRROR` 覆盖上面的选择，或手动下载 `.pt` 后用「浏览」按钮选择。
 
 ---
 

@@ -177,7 +177,9 @@ def upload_input():
 
 @main_bp.route('/api/models/list', methods=['GET'])
 def list_models():
-    """列出可用的模型"""
+    """列出可用的模型（附带按文件名推断的家族/任务，便于前端展示）"""
+    from services import model_registry as registry
+
     models_dir = Config.get_models_dir()
     models = []
     
@@ -190,10 +192,15 @@ def list_models():
                     # 转换为正斜杠，避免JSON转义问题
                     filepath = filepath.replace('\\', '/')
                     filesize = os.path.getsize(os.path.join(models_dir, filename))
+                    parsed = registry.parse_model_name(filename) or {}
                     models.append({
                         'filename': filename,
                         'filepath': filepath,
-                        'size': f"{filesize / (1024*1024):.2f} MB"
+                        'size': f"{filesize / (1024*1024):.2f} MB",
+                        'family': parsed.get('family', ''),
+                        'family_label': parsed.get('family_label', ''),
+                        'task': parsed.get('task', ''),
+                        'task_label': parsed.get('task_label', ''),
                     })
     except Exception as e:
         print(f"列出模型文件错误: {str(e)}")
@@ -204,46 +211,123 @@ def list_models():
 
 @main_bp.route('/api/model/labels', methods=['GET', 'POST'])
 def get_model_labels():
-    """获取模型的标签并预加载模型"""
+    """加载模型（含官方权重名的按需下载），返回标签与任务信息"""
     if request.method == 'GET':
         model_path = request.args.get('model_path', '')
     else:
         data = request.json or {}
         model_path = data.get('model_path', '')
-    
-    if not model_path or not os.path.exists(model_path):
-        return jsonify({'success': False, 'message': '模型文件不存在'}), 400
-    
+
+    if not model_path:
+        return jsonify({'success': False, 'message': '未指定模型'}), 400
+
     try:
-        from ultralytics import YOLO
-        
-        # 加载模型获取标签
-        model = YOLO(model_path)
+        # load_model 内部会把 yolo11n.pt 之类的官方权重名下载到 models/ 再加载，
+        # 因此这里不再用 os.path.exists 提前拦截。
+        if not inference_service.load_model(model_path):
+            return jsonify({
+                'success': False,
+                'message': f'模型加载失败: {model_path}（文件不存在或无法下载）',
+            }), 400
+
+        model = inference_service.model
+        info = inference_service.model_summary()
         labels = model.names
-        task = getattr(model, 'task', 'detect')
-        
-        # 预加载模型到InferenceService（避免推理时加载延迟）
-        print(f"预加载模型到InferenceService: {model_path}")
-        inference_service.load_model(model_path)
-        print("模型预加载完成")
-        
+
         return jsonify({
             'success': True,
             'labels': labels,
             'count': len(labels),
-            'model_preloaded': True,  # 标识模型已预加载
-            'task': task,  # detect / classify / pose / ...
+            'model_preloaded': True,
+            'task': info.get('task', 'detect'),
+            **info,
         })
     except Exception as e:
         return jsonify({'success': False, 'message': f'加载模型标签失败: {str(e)}'}), 500
 
+
+@main_bp.route('/api/model/info', methods=['GET'])
+def get_model_info():
+    """当前已加载模型的信息（任务 / 家族 / 类别数 / 设备）"""
+    info = inference_service.model_summary()
+    if not info:
+        return jsonify({'success': True, 'loaded': False})
+    return jsonify({'success': True, 'loaded': True, **info})
+
+
+@main_bp.route('/api/models/presets', methods=['GET'])
+def list_model_presets():
+    """可一键下载的官方权重列表，以及本机是否已有。"""
+    from services import model_registry as registry
+    from services import model_downloader
+    import ultralytics
+
+    presets = registry.download_presets()
+    for item in presets:
+        item['local'] = os.path.exists(model_downloader.local_path_for(item['name']))
+        # 该文件能用哪些显式源（不含 auto）；魔搭未同步的组合要靠「自动」回落官方
+        item['sources'] = model_downloader.available_sources(item['name'])
+
+    return jsonify({
+        'success': True,
+        'ultralytics_version': ultralytics.__version__,
+        'sources': model_downloader.list_sources(),
+        'tasks': [
+            {
+                'task': task,
+                'label': registry.TASK_LABELS[task],
+                'description': registry.TASK_DESCRIPTIONS[task],
+            }
+            for task in registry.SUPPORTED_TASKS
+        ],
+        'families': [
+            {'family': key, 'label': val['label'], 'min_ultralytics': val['min_ultralytics']}
+            for key, val in registry.MODEL_FAMILIES.items()
+        ],
+        'presets': presets,
+    })
+
+
+@main_bp.route('/api/models/download', methods=['POST'])
+def download_model_preset():
+    """下载官方预训练权重到 models/（已存在则直接返回路径）。
+
+    请求体：`{"name": "yolo26n.pt", "source": "auto"}`
+    `source` 缺省/非法时用 `auto`（魔搭优先，缺失回落官方 GitHub）。
+    """
+    from services import model_downloader
+    from services import model_sources
+
+    data = request.json or {}
+    name = (data.get('name') or '').strip()
+    source = (data.get('source') or '').strip()
+    if not name:
+        return jsonify({'success': False, 'message': '缺少模型名称'}), 400
+
+    try:
+        path = model_downloader.download_weight(name, source=source or None)
+        return jsonify({
+            'success': True,
+            'name': name,
+            # 回显真正生效的源（非法值会被收敛成 auto）
+            'source': model_sources.normalize_source(source),
+            'filepath': path.replace('\\', '/'),
+        })
+    except model_downloader.ModelDownloadError as e:
+        return jsonify({'success': False, 'message': str(e)}), 400
+    except Exception as e:
+        return jsonify({'success': False, 'message': f'下载失败: {str(e)}'}), 500
+
 @main_bp.route('/api/system/info', methods=['GET'])
 def get_system_info():
     """获取系统信息"""
+    import ultralytics
+
     cuda_available = torch.cuda.is_available()
     info = {
         'cuda_available': cuda_available,
         'pytorch_version': torch.__version__,
+        'ultralytics_version': ultralytics.__version__,
     }
     
     if cuda_available:

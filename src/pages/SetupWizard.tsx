@@ -3,7 +3,9 @@ import { Cpu, Search, CheckCircle, XCircle, AlertCircle, ChevronRight, Loader2, 
 import { cn } from "@/lib/utils";
 import { listCondaEnvs, getAppDir, type CondaEnv } from "@/lib/tauri-bridge";
 import { useAppStore, type AppConfig } from "@/lib/store";
+import { APP_VERSION } from "@/lib/version";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import ExportDepsButton from "@/components/ExportDepsButton";
 
 type Step = "mode" | "conda-select" | "confirm";
 
@@ -94,7 +96,7 @@ export default function SetupWizard() {
           <div className="flex items-center justify-center gap-2">
             <p style={{ color: "hsl(var(--muted-foreground))" }}>首次启动配置</p>
             <span className="text-xs px-1.5 py-0.5 rounded" style={{ background: "hsl(var(--muted))", color: "hsl(var(--muted-foreground))" }}>
-              v0.0.7
+              v{APP_VERSION}
             </span>
           </div>
         </div>
@@ -224,6 +226,16 @@ export default function SetupWizard() {
                 </div>
               )}
 
+              {/* 没有 conda / 扫描失败时的解法：导出安装清单 */}
+              {!scanning && (scanError || envs.length === 0) && (
+                <div className="mb-4">
+                  <div className="text-xs mb-2" style={{ color: "hsl(var(--muted-foreground))" }}>
+                    本机没有可用的 conda 环境？可以导出一份安装清单，在 Easy Conda 里一键安装（自动装好 Python 3.10 与全部依赖）。
+                  </div>
+                  <ExportDepsButton />
+                </div>
+              )}
+
               {!scanning && !scanError && envs.length === 0 && (
                 <div className="text-center py-8" style={{ color: "hsl(var(--muted-foreground))" }}>
                   <AlertCircle className="w-8 h-8 mx-auto mb-2 opacity-50" />
@@ -282,9 +294,24 @@ export default function SetupWizard() {
                             缺少: {env.missing_packages.join(", ")}
                           </span>
                         )}
+                        {env.ultralytics_version && (
+                          <span className="text-xs" style={{ color: "hsl(var(--muted-foreground))" }}>
+                            ultralytics {env.ultralytics_version}
+                          </span>
+                        )}
                       </div>
                     </button>
                   ))}
+                </div>
+              )}
+
+              {/* 有环境但都不满足依赖时，引导用「依赖」页/清单重建一个干净环境 */}
+              {!scanning && envs.length > 0 && !envs.some((e) => e.is_valid) && (
+                <div className="mt-3">
+                  <div className="text-xs mb-2" style={{ color: "hsl(var(--muted-foreground))" }}>
+                    现有环境都缺少必需依赖。可以导出一份安装清单，在 Easy Conda 里新建一个完整环境。
+                  </div>
+                  <ExportDepsButton compact />
                 </div>
               )}
 

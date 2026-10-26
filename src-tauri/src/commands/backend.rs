@@ -24,9 +24,16 @@ pub struct CondaEnv {
     pub name: String,
     pub path: String,
     pub python_version: String,
+    /// 检测到的 ultralytics 版本（无法读取时为空串或 "unknown"）
+    pub ultralytics_version: String,
     pub missing_packages: Vec<String>,
     pub is_valid: bool,
 }
+
+/// 能加载 YOLO11（以及更早）版本的最低 ultralytics 版本。
+const MIN_ULTRALYTICS: (u32, u32, u32) = (8, 3, 0);
+/// 能加载 YOLO26 / YOLO27 的最低 ultralytics 版本。
+const YOLO26_MIN_ULTRALYTICS: (u32, u32, u32) = (8, 4, 0);
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct BackendStatus {
@@ -238,13 +245,94 @@ fn check_conda_env_fs(path: &str) -> CondaEnv {
         }
     }
 
+    // ultralytics 版本检查：旧版本装得上但加载不了 YOLO11/26/27 权重，
+    // 用户会看到「模型加载失败」，却不知道是包太旧。这里提前归类为依赖不完整。
+    let ultralytics_version = read_ultralytics_version(path).unwrap_or_default();
+    if !ultralytics_version.is_empty() {
+        let current = parse_version_tuple(&ultralytics_version);
+        if current < MIN_ULTRALYTICS {
+            missing.push(format!(
+                "ultralytics>={}.{}.{}（当前 {}，无法加载 YOLO11/26/27）",
+                MIN_ULTRALYTICS.0, MIN_ULTRALYTICS.1, MIN_ULTRALYTICS.2, ultralytics_version
+            ));
+        } else if current < YOLO26_MIN_ULTRALYTICS {
+            // 能跑 YOLO11，但 YOLO26/27 需要更新的版本：不算无效，但要让用户知道
+            missing.push(format!(
+                "ultralytics>={}.{}.{}（当前 {}，可运行 YOLO11，无法加载 YOLO26/27）",
+                YOLO26_MIN_ULTRALYTICS.0,
+                YOLO26_MIN_ULTRALYTICS.1,
+                YOLO26_MIN_ULTRALYTICS.2,
+                ultralytics_version
+            ));
+        }
+    }
+
     CondaEnv {
         is_valid: missing.is_empty(),
         missing_packages: missing,
         name,
         path: path.to_string(),
         python_version: py_version,
+        ultralytics_version,
     }
+}
+
+/// 解析 `8.4.189` / `8.3.0rc1` 这类版本号为可比较的三元组。
+fn parse_version_tuple(raw: &str) -> (u32, u32, u32) {
+    let cleaned: String = raw
+        .trim()
+        .chars()
+        .take_while(|c| c.is_ascii_digit() || *c == '.')
+        .collect();
+    let mut parts = cleaned.split('.').map(|p| p.parse::<u32>().unwrap_or(0));
+    (
+        parts.next().unwrap_or(0),
+        parts.next().unwrap_or(0),
+        parts.next().unwrap_or(0),
+    )
+}
+
+/// 从 site-packages 读取 ultralytics 的 `__version__`（纯文件读取，不启动 Python）。
+fn read_ultralytics_version(env_path: &str) -> Option<String> {
+    for dir in site_packages_dirs(env_path) {
+        let init = dir.join("ultralytics").join("__init__.py");
+        let Ok(content) = std::fs::read_to_string(&init) else {
+            continue;
+        };
+        for line in content.lines() {
+            let line = line.trim();
+            if let Some(rest) = line.strip_prefix("__version__") {
+                let value = rest
+                    .trim_start()
+                    .trim_start_matches('=')
+                    .trim()
+                    .trim_matches('"')
+                    .trim_matches('\'');
+                if !value.is_empty() {
+                    return Some(value.to_string());
+                }
+            }
+        }
+    }
+    None
+}
+
+/// 列出环境里所有可能的 site-packages 目录（Windows `Lib\` + Unix `lib/pythonX.Y/`）。
+fn site_packages_dirs(env_path: &str) -> Vec<std::path::PathBuf> {
+    let mut dirs = Vec::new();
+    let win = std::path::Path::new(env_path).join("Lib").join("site-packages");
+    if win.exists() {
+        dirs.push(win);
+    }
+    if let Ok(entries) = std::fs::read_dir(std::path::Path::new(env_path).join("lib")) {
+        for entry in entries.flatten() {
+            let candidate = entry.path().join("site-packages");
+            if candidate.exists() {
+                dirs.push(candidate);
+            }
+        }
+    }
+    dirs
 }
 
 /// 在 conda-meta 目录中查找 {pkg_name}-*.json

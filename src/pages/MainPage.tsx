@@ -25,11 +25,12 @@ import {
   ZoomIn,
   ZoomOut,
 } from "lucide-react";
-import { QRCodeSVG } from "qrcode.react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { cn } from "@/lib/utils";
 import { useAppStore } from "@/lib/store";
 import type { BatchResultItem } from "@/lib/store";
+import { APP_VERSION } from "@/lib/version";
+import { PRODUCT_HOME_URL, RELEASES_URL } from "@/lib/links";
 import {
   startBackend,
   stopBackend,
@@ -53,6 +54,15 @@ import {
   emitStopInference,
 } from "@/lib/socket";
 import EnvManager from "@/components/EnvManager";
+import TipDialog from "@/components/TipDialog";
+import ModelDownloader from "@/components/ModelDownloader";
+import {
+  isClassifyTask,
+  taskDescription,
+  taskLabel,
+  type ModelInfo,
+  type ModelTask,
+} from "@/lib/model-tasks";
 
 const BACKEND_PORT = 18080;
 
@@ -105,9 +115,13 @@ function TopBar({
   };
 
   const handleDownload = () => {
-    if (updateInfo?.release_url) {
-      openUrl(updateInfo.release_url).catch(() => {});
-    }
+    // 官网是分发主入口（国内可达、可放镜像）；GitHub Releases 仅作备用。
+    // 刻意不使用 updateInfo.release_url：它可能指向被改名的旧 tag 页。
+    openUrl(PRODUCT_HOME_URL).catch(() => {});
+  };
+
+  const handleOpenReleases = () => {
+    openUrl(RELEASES_URL).catch(() => {});
   };
 
   return (
@@ -125,7 +139,7 @@ function TopBar({
             Easy Infer Station
           </span>
           <span className="text-xs px-1.5 py-0.5 rounded" style={{ background: "hsl(var(--muted))", color: "hsl(var(--muted-foreground))" }}>
-            v0.0.7
+            v{APP_VERSION}
           </span>
         </div>
 
@@ -257,119 +271,8 @@ function TopBar({
         </div>
       </div>
 
-      {/* 打赏弹窗 */}
-      {showDonateModal && (
-        <div
-          className="fixed inset-0 z-50 flex items-center justify-center"
-          style={{ background: "rgba(0,0,0,0.6)" }}
-          onClick={() => setShowDonateModal(false)}
-        >
-          <div
-            className="relative rounded-2xl shadow-2xl overflow-hidden"
-            style={{
-              width: 600,
-              maxWidth: "92vw",
-              background: "linear-gradient(160deg, #0f1b2d 0%, #0a1220 100%)",
-              border: "1px solid rgba(255,255,255,0.1)",
-              boxShadow: "0 24px 64px rgba(0,0,0,0.7)",
-            }}
-            onClick={(e) => e.stopPropagation()}
-          >
-            {/* 关闭 */}
-            <button
-              onClick={() => setShowDonateModal(false)}
-              className="absolute top-4 right-4 z-10 w-8 h-8 flex items-center justify-center rounded-full hover:opacity-70 transition-opacity"
-              style={{ background: "rgba(255,255,255,0.1)", color: "rgba(255,255,255,0.6)" }}
-              title="关闭"
-            >
-              <X className="w-4 h-4" />
-            </button>
-
-            {/* 标题 */}
-            <div className="flex flex-col items-center pt-8 pb-6 px-8">
-              <span style={{ fontSize: 44, lineHeight: 1 }}>☕</span>
-              <h2 className="mt-3 text-xl font-bold" style={{ color: "#fff" }}>
-                Buy Me a Coffee
-              </h2>
-              <p className="mt-1.5 text-sm" style={{ color: "rgba(255,255,255,0.5)" }}>
-                如果 Easy Infer Station 对你有帮助，请作者喝杯咖啡
-              </p>
-            </div>
-
-            <div style={{ height: 1, background: "rgba(255,255,255,0.08)", marginBottom: 20 }} />
-
-            {/* 双列二维码 */}
-            <div className="grid grid-cols-2 gap-6 px-10 pb-6">
-              {/* 支付宝卡 */}
-              <div className="flex flex-col items-center gap-3">
-                <div className="flex items-center gap-2 self-start">
-                  <span
-                    className="w-7 h-7 rounded-md flex items-center justify-center text-sm font-bold"
-                    style={{ background: "#1677ff", color: "#fff" }}
-                  >
-                    支
-                  </span>
-                  <span className="text-sm font-semibold" style={{ color: "#fff" }}>支付宝</span>
-                </div>
-                <div
-                  className="w-full rounded-2xl flex items-center justify-center"
-                  style={{ background: "rgba(22,119,255,0.10)", border: "1.5px solid rgba(22,119,255,0.45)", padding: 14 }}
-                >
-                  <QRCodeSVG
-                    value="https://qr.alipay.com/fkx13794uv9tdzovji5js38"
-                    size={200}
-                    fgColor="#1677ff"
-                    bgColor="transparent"
-                    level="M"
-                    title="支付宝收款码"
-                    className="w-full h-auto block"
-                  />
-                </div>
-                <span className="text-xs" style={{ color: "rgba(255,255,255,0.5)" }}>
-                  扫码支付 <strong style={{ color: "#f6a94a" }}>¥9.90</strong>
-                </span>
-              </div>
-
-              {/* 微信卡 */}
-              <div className="flex flex-col items-center gap-3">
-                <div className="flex items-center gap-2 self-start">
-                  <span
-                    className="w-7 h-7 rounded-md flex items-center justify-center text-sm font-bold"
-                    style={{ background: "#07c160", color: "#fff" }}
-                  >
-                    微
-                  </span>
-                  <span className="text-sm font-semibold" style={{ color: "#fff" }}>微信支付</span>
-                </div>
-                <div
-                  className="w-full rounded-2xl flex items-center justify-center"
-                  style={{ background: "rgba(7,193,96,0.10)", border: "1.5px solid rgba(7,193,96,0.45)", padding: 14 }}
-                >
-                  <QRCodeSVG
-                    value="wxp://f2f1zWKP3fltcLCdS-146WJHNFD5pqCDWKWSsFTNIwiDh_iPStg8Lsb3WNJ7Fd--wWla"
-                    size={200}
-                    fgColor="#07c160"
-                    bgColor="transparent"
-                    level="M"
-                    title="微信收款码"
-                    className="w-full h-auto block"
-                  />
-                </div>
-                <span className="text-xs" style={{ color: "rgba(255,255,255,0.5)" }}>
-                  扫码支付 <strong style={{ color: "#f6a94a" }}>¥9.90</strong>
-                </span>
-              </div>
-            </div>
-
-            <div
-              className="py-3.5 text-center text-xs"
-              style={{ color: "rgba(255,255,255,0.35)", background: "rgba(255,255,255,0.04)", borderTop: "1px solid rgba(255,255,255,0.07)" }}
-            >
-              感谢支持，你的鼓励是我持续更新的动力
-            </div>
-          </div>
-        </div>
-      )}
+      {/* 打赏弹窗（payment-server /client/* 实时下单 + 轮询确认） */}
+      <TipDialog open={showDonateModal} onClose={() => setShowDonateModal(false)} />
 
       {/* 更新弹窗 */}
       {showUpdateModal && (
@@ -433,22 +336,32 @@ function TopBar({
                     {updateInfo.release_notes}
                   </div>
                 )}
-                <div className="flex justify-end gap-2">
+                <div className="flex items-center justify-between gap-2 mt-1">
                   <button
-                    onClick={() => setShowUpdateModal(false)}
-                    className="px-4 py-1.5 rounded-md text-sm transition-opacity hover:opacity-80"
-                    style={{ background: "hsl(var(--muted))", color: "hsl(var(--foreground))" }}
+                    onClick={handleOpenReleases}
+                    className="text-xs underline-offset-2 hover:underline"
+                    style={{ color: "hsl(var(--muted-foreground))" }}
+                    title="在 GitHub 上查看本版本的全部安装包"
                   >
-                    稍后再说
+                    其他平台 / 历史版本
                   </button>
-                  <button
-                    onClick={handleDownload}
-                    className="px-4 py-1.5 rounded-md text-sm font-medium transition-opacity hover:opacity-80 flex items-center gap-1.5"
-                    style={{ background: "hsl(var(--primary))", color: "hsl(var(--primary-foreground))" }}
-                  >
-                    <ArrowDownToLine className="w-3.5 h-3.5" />
-                    前往下载
-                  </button>
+                  <div className="flex justify-end gap-2">
+                    <button
+                      onClick={() => setShowUpdateModal(false)}
+                      className="px-4 py-1.5 rounded-md text-sm transition-opacity hover:opacity-80"
+                      style={{ background: "hsl(var(--muted))", color: "hsl(var(--foreground))" }}
+                    >
+                      稍后再说
+                    </button>
+                    <button
+                      onClick={handleDownload}
+                      className="px-4 py-1.5 rounded-md text-sm font-medium transition-opacity hover:opacity-80 flex items-center gap-1.5"
+                      style={{ background: "hsl(var(--primary))", color: "hsl(var(--primary-foreground))" }}
+                    >
+                      <ArrowDownToLine className="w-3.5 h-3.5" />
+                      前往官网下载
+                    </button>
+                  </div>
                 </div>
               </>
             ) : (
@@ -463,7 +376,15 @@ function TopBar({
                 <p className="text-sm mb-4" style={{ color: "hsl(var(--muted-foreground))" }}>
                   当前版本 v{updateInfo?.current_version} 已是最新，无需更新。
                 </p>
-                <div className="flex justify-end">
+                <div className="flex items-center justify-between gap-2">
+                  <button
+                    onClick={handleDownload}
+                    className="text-xs underline-offset-2 hover:underline"
+                    style={{ color: "hsl(var(--muted-foreground))" }}
+                    title="访问产品官网"
+                  >
+                    访问产品官网
+                  </button>
                   <button
                     onClick={() => setShowUpdateModal(false)}
                     className="px-4 py-1.5 rounded-md text-sm transition-opacity hover:opacity-80"
@@ -487,7 +408,11 @@ interface InferParamsState {
   inputSource: string;
   imagePaths: string[];   // 多图模式已选文件（非空时优先用批量模式）
   modelPath: string;
-  taskType: "detect" | "classify";                       // 任务类型：目标检测 / 分类
+  /**
+   * 任务类型。**由模型决定**（加载模型后从 /api/model/labels 读回），
+   * 仅用于切换 UI 形态（分类 vs 框类），不再作为推理参数影响后端。
+   */
+  taskType: ModelTask;
   confidence: number;
   iouThresh: number;
   device: string;
@@ -568,6 +493,8 @@ function ControlPanel({
   onImportRoiJson,
   onStartRoiDraw,
   roiDrawMode,
+  modelInfo,
+  onOpenDownloader,
 }: {
   params: InferParamsState;
   onChange: (p: Partial<InferParamsState>) => void;
@@ -584,6 +511,8 @@ function ControlPanel({
   onImportRoiJson: () => void;
   onStartRoiDraw: () => void;
   roiDrawMode: boolean;
+  modelInfo: ModelInfo | null;
+  onOpenDownloader: () => void;
 }) {
   const inputTypes: { value: InferParamsState["inputType"]; label: string; icon: React.ReactNode }[] = [
     { value: "image", label: "图片", icon: <Image className="w-3.5 h-3.5" /> },
@@ -600,33 +529,35 @@ function ControlPanel({
       }}
     >
       <div className="flex-1 overflow-y-auto p-3 space-y-4">
-        {/* 任务类型 */}
+        {/* 任务类型：由模型决定，仅展示 */}
         <Section title="任务类型">
-          <div className="flex gap-1">
-            {[
-              { value: "detect" as const, label: "目标检测" },
-              { value: "classify" as const, label: "分类" },
-            ].map((t) => (
-              <button
-                key={t.value}
-                onClick={() => onChange({ taskType: t.value })}
-                className="flex-1 py-1 rounded text-xs transition-all"
-                style={{
-                  background:
-                    params.taskType === t.value
-                      ? "hsl(var(--primary))"
-                      : "hsl(var(--muted))",
-                  color:
-                    params.taskType === t.value
-                      ? "hsl(var(--primary-foreground))"
-                      : "hsl(var(--muted-foreground))",
-                  border: "1px solid hsl(var(--border))",
-                }}
-              >
-                {t.label}
-              </button>
-            ))}
+          <div className="flex items-center gap-2">
+            <span
+              className="px-2 py-1 rounded text-xs font-medium"
+              style={{
+                background: params.modelPath ? "hsl(var(--primary))" : "hsl(var(--muted))",
+                color: params.modelPath
+                  ? "hsl(var(--primary-foreground))"
+                  : "hsl(var(--muted-foreground))",
+                border: "1px solid hsl(var(--border))",
+              }}
+            >
+              {params.modelPath ? taskLabel(params.taskType) : "未选择模型"}
+            </span>
+            {modelInfo?.family_label && (
+              <span className="text-xs truncate" style={{ color: "hsl(var(--muted-foreground))" }}>
+                {modelInfo.family_label}
+                {modelInfo.size ? `-${modelInfo.size}` : ""}
+                {modelInfo.class_count != null ? ` · ${modelInfo.class_count} 类` : ""}
+              </span>
+            )}
           </div>
+          {params.modelPath && (
+            <div className="text-xs mt-1 leading-relaxed" style={{ color: "hsl(var(--muted-foreground))" }}>
+              {taskDescription(params.taskType)}
+              <span className="opacity-60">（由模型文件决定）</span>
+            </div>
+          )}
         </Section>
 
         {/* 模型选择 */}
@@ -670,8 +601,20 @@ function ControlPanel({
             >
               <FolderOpen className="w-3.5 h-3.5" />
             </button>
+            <button
+              onClick={onOpenDownloader}
+              title="下载官方模型（YOLO26 / YOLO11 / YOLOv8）"
+              className="flex-shrink-0 flex items-center justify-center px-2 rounded transition-opacity hover:opacity-70"
+              style={{
+                background: "hsl(var(--muted))",
+                border: "1px solid hsl(var(--border))",
+                color: "hsl(var(--foreground))",
+              }}
+            >
+              <ArrowDownToLine className="w-3.5 h-3.5" />
+            </button>
           </div>
-          {labels.length > 0 && params.taskType === "classify" ? (
+          {labels.length > 0 && isClassifyTask(params.taskType) ? (
             /* 分类模式：选择需要报警的类别 */
             <div className="mt-2">
               <div className="flex items-center justify-between mb-1">
@@ -776,7 +719,7 @@ function ControlPanel({
           ) : null}
 
           {/* 分类模式：英文标签中文翻译 */}
-          {params.taskType === "classify" && labels.length > 0 && (
+          {isClassifyTask(params.taskType) && labels.length > 0 && (
             <div className="mt-2">
               <span className="text-xs mb-1 block" style={{ color: "hsl(var(--muted-foreground))" }}>
                 标签翻译（可选，留空则显示原英文标签）
@@ -818,7 +761,7 @@ function ControlPanel({
         </Section>
 
         {/* 分类模式：导入 ROI JSON（多边形，可选；未导入则整图为 ROI） */}
-        {params.taskType === "classify" && (
+        {isClassifyTask(params.taskType) && (
           <Section title="ROI 区域">
             <button
               onClick={onImportRoiJson}
@@ -975,7 +918,7 @@ function ControlPanel({
 
         {/* 推理参数 */}
         <Section title="推理参数">
-          {params.taskType === "detect" && (
+          {!isClassifyTask(params.taskType) && (
             <>
               <SliderField
                 label="置信度"
@@ -1022,7 +965,7 @@ function ControlPanel({
         </Section>
 
         {/* 目标跟踪 */}
-        {params.taskType === "detect" && (
+        {!isClassifyTask(params.taskType) && (
           <Section title="目标跟踪">
             <div className="flex items-center justify-between mb-2">
               <span className="text-xs" style={{ color: "hsl(var(--muted-foreground))" }}>
@@ -1968,8 +1911,15 @@ export default function MainPage() {
     useAppStore();
   const { backendStatus, isInferring, models, labels } = useAppStore();
   const [apiToken, setApiToken] = useState("");
+  // 用 ref 持有权威值：boot 协程内拿到的 token 需要立即用于请求，
+  // 只靠 state 会读到上一次渲染闭包里的空字符串（配了 API_TOKEN 时会 401）。
+  const apiTokenRef = useRef("");
 
   const [envManagerOpen, setEnvManagerOpen] = useState(false);
+  // 官方模型下载面板
+  const [downloaderOpen, setDownloaderOpen] = useState(false);
+  // 当前模型的元信息（任务 / 家族 / 类别数），由 /api/model/labels 返回
+  const [modelInfo, setModelInfo] = useState<ModelInfo | null>(null);
   const [params, setParams] = useState<InferParamsState>({
     inputType: "image",
     inputSource: "",
@@ -2006,8 +1956,9 @@ export default function MainPage() {
 
   const getAuthHeaders = () => {
     const headers = new Headers();
-    if (apiToken) {
-      headers.set("X-API-Token", apiToken);
+    const token = apiTokenRef.current || apiToken;
+    if (token) {
+      headers.set("X-API-Token", token);
     }
     return headers;
   };
@@ -2053,14 +2004,19 @@ export default function MainPage() {
     }
   };
 
-  // 防止 React Strict Mode 双重 mount 导致重复启动后端
-  const hasStarted = useRef(false);
+  // 启动签名：环境 + 目录 + 端口。
+  // 签名不变时重复调用不会重启动后端（避免依赖抖动 / StrictMode 双挂载）；
+  // 签名变化（如通过「环境管理」切换 conda 环境）会先清理旧连接再重新启动。
+  const bootKey = config
+    ? `${config.conda.pythonExe}|${config.appDir}|${config.port}`
+    : "";
+  const bootedKeyRef = useRef<string | null>(null);
 
   // 启动后端并建立 Socket 连接
   useEffect(() => {
-    if (!config) return;
-    if (hasStarted.current) return;
-    hasStarted.current = true;
+    if (!config || !bootKey) return;
+    if (bootedKeyRef.current === bootKey) return;
+    bootedKeyRef.current = bootKey;
 
     let healthTimer: ReturnType<typeof setInterval>;
 
@@ -2072,9 +2028,11 @@ export default function MainPage() {
       try {
         const clientConfig = await getBackendClientConfig(config.appDir);
         clientApiToken = clientConfig.api_token.trim();
+        apiTokenRef.current = clientApiToken;
         setApiToken(clientApiToken);
       } catch (e) {
         addInferLog(`读取后端鉴权配置失败，将按无鉴权模式继续: ${e}`);
+        apiTokenRef.current = "";
         setApiToken("");
       }
 
@@ -2167,8 +2125,13 @@ export default function MainPage() {
       clearInterval(healthTimer);
       disconnectSocket();
       stopBackend().catch(() => {});
+      // 允许下一次（切换环境 / 重新挂载）重新拉起后端
+      bootedKeyRef.current = null;
     };
-  }, [config]);
+    // 依赖 bootKey 而不是 config：config 对象每次 setConfig 都是新引用，
+    // 但只有环境/目录/端口变化才需要重启后端。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [bootKey]);
 
   const fetchModels = async () => {
     try {
@@ -2176,7 +2139,7 @@ export default function MainPage() {
         headers: getAuthHeaders(),
       });
       const data = await resp.json();
-      // 后端返回 {filename, filepath, size} 对象数组，取 filepath 存为字符串列表
+      // 后端返回 {filename, filepath, size, task...} 对象数组，取 filepath 存为字符串列表
       const list: unknown[] = data.models ?? [];
       const paths = list.map((m) =>
         typeof m === "string" ? m : (m as { filepath: string }).filepath
@@ -2207,9 +2170,23 @@ export default function MainPage() {
             .sort(([a], [b]) => Number(a) - Number(b))
             .map(([, v]) => String(v));
       setLabels(list);
-      // 根据模型任务类型自动切换 UI 模式（classify -> 分类，其余 -> 检测）
-      const task: InferParamsState["taskType"] = data.task === "classify" ? "classify" : "detect";
-      // 切换模型时清除已选类别与标签翻译，并按需切换任务类型
+      // 任务类型由模型决定：后端返回 model.task（detect/segment/classify/pose/obb）
+      const rawTask = typeof data.task === "string" ? data.task : "detect";
+      const task: InferParamsState["taskType"] =
+        rawTask === "classify" || rawTask === "segment" || rawTask === "pose" || rawTask === "obb"
+          ? rawTask
+          : "detect";
+      setModelInfo({
+        task,
+        task_label: data.task_label,
+        family: data.family,
+        family_label: data.family_label,
+        size: data.size,
+        class_count: data.class_count ?? list.length,
+        model_path: data.model_path,
+        device: data.device,
+      });
+      // 切换模型时清除已选类别与标签翻译，并按模型任务切换 UI 形态
       setParams((p) => ({ ...p, selectedLabels: [], alarmLabels: [], labelAliases: [], taskType: task }));
     } catch (e) {
       addInferLog(`加载标签请求失败: ${e}`);
@@ -2314,12 +2291,13 @@ export default function MainPage() {
   };
 
   const handleStart = () => {
+    // 注意：不再传 task_type —— 后端以模型自身的 task 为准（detect/segment/pose/classify/obb），
+    // 由 UI 传任务类型在换模型后必然不一致。
     const commonParams = {
       model_path: params.modelPath,
       confidence: params.confidence,
       iou: params.iouThresh,
       device: params.device,
-      task_type: params.taskType,
       selected_labels: params.selectedLabels,
       alarm_labels: params.alarmLabels,
       label_aliases: params.labelAliases,
@@ -2356,6 +2334,18 @@ export default function MainPage() {
   return (
     <div className="flex flex-col h-screen overflow-hidden">
       <TopBar onOpenEnvManager={() => setEnvManagerOpen(true)} onRefresh={handleRefresh} />
+
+      <ModelDownloader
+        open={downloaderOpen}
+        port={config?.port ?? BACKEND_PORT}
+        onClose={() => setDownloaderOpen(false)}
+        onDownloaded={(filepath) => {
+          // 下载完成直接选中，并刷新下拉列表
+          if (!models.includes(filepath)) setModels([...models, filepath]);
+          setParams((p) => ({ ...p, modelPath: filepath }));
+          addInferLog(`已下载模型: ${filepath}`);
+        }}
+      />
 
       <div className="flex flex-1 overflow-hidden">
         <ControlPanel
@@ -2395,6 +2385,8 @@ export default function MainPage() {
           onImportRoiJson={handleImportRoiJson}
           onStartRoiDraw={() => setRoiDrawMode(true)}
           roiDrawMode={roiDrawMode}
+          modelInfo={modelInfo}
+          onOpenDownloader={() => setDownloaderOpen(true)}
         />
 
         {/* 侧边栏拖拽把手 */}

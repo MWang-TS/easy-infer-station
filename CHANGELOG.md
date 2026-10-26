@@ -1,5 +1,45 @@
 # 更新日志
 
+## 2026-10-27 - v0.1.0 模型下载源可选（国内加速）
+
+### 新增功能
+- ✅ 下载面板新增「下载源」切换：自动（国内优先）/ 魔搭 ModelScope / GitHub 官方 / 第三方加速，选择记入本地存储
+- ✅ 新增魔搭（ModelScope）镜像源：国内实测 400+ KB/s（GitHub 直连约 23 KB/s），权重与官方数值一致
+- ✅ 「自动」源用魔搭优先，该镜像未同步的文件（YOLOv8 的 seg/pose/cls/obb、YOLO11 的 cls/obb）自动回落官方 GitHub
+- ✅ 面板逐行提示「该源无此文件」，避免选了镜像后按钮点了才报错
+
+### 修复问题
+- 🐛 修复下载校验只看 `PK\x03\x04` 魔数的问题：现在还会校验 zip 可读，镜像站返回的 HTML 错误页 / 截断文件会被直接拒绝
+- 🐛 修复跨下载源断点续传会拼出坏文件的问题：魔搭与 GitHub 的文件数值等价但字节不同，`.part` 现在记录来源 URL，换源时自动丢弃重下
+
+### 技术说明
+- 源定义抽到 `services/model_sources.py`，`/api/models/presets` 返回 `sources` 与每个权重的可用源，`/api/models/download` 接受 `source` 参数
+- `EIS_MODEL_MIRROR` 环境变量仍然生效，优先级高于界面选择（内网 / 自建镜像场景）
+
+## 2026-10-26 - v0.1.0 打赏接入 payment-server
+
+### 新增功能
+- ✅ 支持 YOLO26 / YOLO11 / YOLOv8 全家族，以及后续 YOLO27；任务类型由模型自身元数据决定
+- ✅ 补齐实例分割（segment）与旋转框（OBB）任务，姿态估计不再依赖 `task='pose'` 强制覆盖
+- ✅ 模型下拉框新增「下载官方模型」面板：按家族 × 任务 × 尺寸拉取权重到 `models/`，支持断点续传与镜像
+- ✅ 环境检查新增 ultralytics 版本校验（< 8.3 无法加载 YOLO11，< 8.4 无法加载 YOLO26/27）
+- ✅ 「系统管理 → 依赖」：列出运行所需的全部库与版本（来自内嵌的 `requirements.txt`），支持导出 `environment.yml` / `requirements.txt`
+- ✅ 安装引导：当本机没有可用 conda 环境时，配置向导内置「导出安装清单」入口，导出的文件可在 [Easy Conda](https://github.com/MWang-TS/easy-conda) 中「环境 → 导入」直接安装
+- ✅ 打赏改为实时下单：`GET /client/config` 取上下限与可用渠道 → `POST /client/orders`（`orderType: tip`）→ 渲染支付宝/微信二维码
+- ✅ 二维码带倒计时，每 2 秒轮询 `GET /client/orders/{id}`，支付成功后自动确认；订单过期后再等 60 秒对账窗口才判「未确认」
+- ✅ 支持预设档位 + 自定义金额，金额上下限完全由服务端 `tips.minCents/maxCents` 决定
+- ✅ 设备码（deviceCode）首次使用生成并持久化，仅用于绑定订单，不涉及资金
+
+### 变更
+- 🔄 移除标题栏打赏弹窗中两张写死的静态收款码，改为 payment-server 实时订单二维码
+- 🔄 打赏与授权完全解耦：不签发许可证、不改变任何功能可用性
+- 🔄 「关于」面板补充产品主页（eis.tsagent.cc）、出品方（火木工作室）与版权信息
+- 🔄 检查更新的「前往下载」改为跳转产品官网 `eis.tsagent.cc`（GitHub Releases 降级为「其他平台 / 历史版本」备用入口）
+
+### 技术说明
+- 客户端只走 `/client/*`，`apiSecret` 不进安装包；所有请求携带 `X-Client-App-Id`（构建期注入，可用 `VITE_PAY_APP_ID` 覆盖）
+- `GET /client/config` 返回 `tipOnly: true`，订阅/试用入口保持隐藏
+
 ## 2026-09-03 - v0.0.7 修复后端端口冲突
 
 ### 修复问题
