@@ -617,25 +617,42 @@ fn health_version(health: &serde_json::Value) -> &str {
     health.get("app_version").and_then(|v| v.as_str()).unwrap_or("")
 }
 
-/// 确保端口上没有「旧版本残留」的后端。
+/// 判断 `/health` 的应答是否真的是本产品的后端。
 ///
-/// 返回 Ok(Some(())) 表示已有一个**版本一致**的后端在跑，可直接复用；
-/// Ok(None) 表示端口干净，可以启动新进程。
-async fn clear_stale_backend(port: u16) -> Result<Option<()>, String> {
-    let expected = env!("CARGO_PKG_VERSION");
+/// 只有确认是自家后端才敢结束它；端口上若是别的程序，要报错让用户处理，
+/// 绝不能误杀。
+fn looks_like_our_backend(health: &serde_json::Value) -> bool {
+    if health.get("cuda_available").is_some() {
+        return true;
+    }
+    health
+        .get("message")
+        .and_then(|v| v.as_str())
+        .map(|m| m.contains("Easy Infer Station"))
+        .unwrap_or(false)
+}
+
+/// 清掉端口上残留的后端进程（上一个版本 / 上一个实例的孤儿）。
+///
+/// **不复用**：复用别人的进程意味着我们拿不到子进程句柄，退出时无法清理，
+/// 又会留下新的孤儿；而且前端 `check_backend_alive` 依赖本进程持有句柄，
+/// 复用会让界面误报「进程已退出」。所以一律结束旧进程、由本进程重新拉起。
+async fn clear_stale_backend(port: u16) -> Result<(), String> {
     let Some(health) = probe_health(port).await else {
-        return Ok(None);
+        return Ok(());
     };
 
-    let running = health_version(&health).to_string();
-    if running == expected {
-        return Ok(Some(()));
+    if !looks_like_our_backend(&health) {
+        return Err(format!(
+            "端口 {} 已被其他程序占用，请关闭该程序或在设置中更换端口后重试",
+            port
+        ));
     }
 
-    // 端口被旧版本（或无法识别版本的旧后端）占着 —— 必须清掉
+    let running = health_version(&health).to_string();
     let Some(pid) = find_pid_on_port(port) else {
         return Err(format!(
-            "端口 {} 已被其他程序占用（无法确定进程号），请关闭占用该端口的程序后重试",
+            "端口 {} 已被占用（无法确定进程号），请关闭占用该端口的程序后重试",
             port
         ));
     };
@@ -644,16 +661,15 @@ async fn clear_stale_backend(port: u16) -> Result<Option<()>, String> {
     for _ in 0..24 {
         tokio::time::sleep(std::time::Duration::from_millis(250)).await;
         if probe_health(port).await.is_none() {
-            return Ok(None);
+            return Ok(());
         }
     }
 
     Err(format!(
-        "端口 {} 被一个旧版本后端占用（正在运行 {}，当前 {}，PID {}），无法自动结束。\n\
+        "端口 {} 上的旧后端（版本 {}，PID {}）无法自动结束。\n\
          请在任务管理器中结束该进程后重启本应用。",
         port,
-        if running.is_empty() { "未知版本" } else { &running },
-        expected,
+        if running.is_empty() { "未知" } else { &running },
         pid
     ))
 }
@@ -671,11 +687,17 @@ pub async fn start_backend(
     // 升级后它仍指向同一个 backend_runtime，但里面的代码需要重新同步。
     let app_dir = ensure_runtime(&app).unwrap_or(app_dir);
 
-    // 端口上若趴着旧版本后端（主程序被强杀留下的孤儿），必须先清掉，
-    // 否则新进程抢不到端口，前端会静默连上旧代码。
-    if clear_stale_backend(port).await?.is_some() {
-        return Ok(());
+    // 本进程已经持有后端就直接返回（前端会按「已在运行」处理并有专门分支）
+    {
+        let guard = state.0.lock().map_err(|e| e.to_string())?;
+        if guard.is_some() {
+            return Err("后端已在运行".to_string());
+        }
     }
+
+    // 端口上若趴着残留后端（主程序被强杀留下的孤儿，可能是旧版本代码），
+    // 必须先清掉，否则新进程抢不到端口，前端会静默连上旧代码。
+    clear_stale_backend(port).await?;
 
     // 把 Python 的 stdout/stderr 重定向到临时日志文件，方便诊断
     let log_path = std::env::temp_dir().join("easy_infer_backend.log");
