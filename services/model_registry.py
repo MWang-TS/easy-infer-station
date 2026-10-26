@@ -228,17 +228,41 @@ def count_items(result) -> int:
 
 
 def filter_by_labels(result, selected_labels) -> None:
-    """按类别 id 过滤结果（原地修改）。boxes 与 obb 都处理。"""
+    """按类别 id 过滤结果（原地修改）。boxes / obb / masks 必须同步过滤。
+
+    分割模型的 `masks` 与 `boxes` 是同一次检测的两份表示，**强制一一对应**。
+    只过滤 boxes 而留下全部 masks 会让 `result.plot()` 里的掩膜数量（如 8）
+    与置信度数量（如 4）不一致，直接抛
+    `RuntimeError: The size of tensor a (8) must match the size of tensor b (4)`。
+    表现为「同一张多类别图，勾选部分类别就推不了，只含单类别时正常」。
+    """
     if not selected_labels:
         return
     keep = {int(v) for v in selected_labels}
     import torch
+
+    boxes = getattr(result, "boxes", None)
+    masks = getattr(result, "masks", None)
+
+    # 先用 boxes 的类别算出布尔掩码：掩膜自身没有类别信息，只能靠它对齐
+    box_mask = None
+    if boxes is not None:
+        try:
+            classes = boxes.cls
+            if classes is not None and len(classes):
+                box_mask = torch.tensor([int(c.item()) in keep for c in classes])
+        except Exception:
+            box_mask = None
 
     for attr in ("boxes", "obb"):
         obj = getattr(result, attr, None)
         if obj is None:
             continue
         try:
+            if attr == "boxes" and box_mask is not None:
+                if not bool(box_mask.all()):
+                    setattr(result, attr, obj[box_mask])
+                continue
             classes = obj.cls
             if classes is None or len(classes) == 0:
                 continue
@@ -246,6 +270,15 @@ def filter_by_labels(result, selected_labels) -> None:
             setattr(result, attr, obj[mask])
         except Exception:
             continue
+
+    if masks is not None and box_mask is not None:
+        try:
+            data = getattr(masks, "data", None)
+            # 长度不一致说明上游已经错位，此时宁可不动也不要进一步破坏
+            if data is not None and len(data) == len(box_mask) and not bool(box_mask.all()):
+                result.masks = masks[box_mask]
+        except Exception:
+            pass
 
 
 def iter_items(result):
