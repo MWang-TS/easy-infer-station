@@ -532,6 +532,132 @@ pub async fn validate_conda_env(env_path: String) -> Result<CondaEnv, String> {
     Ok(check_conda_env_fs(&env_path))
 }
 
+/// 找出监听指定端口的进程 PID。
+///
+/// 为什么需要它：后端 Python 是子进程，若主程序被任务管理器强杀 / 崩溃，
+/// 子进程会变成孤儿继续占着端口。新版本启动时抢不到端口，前端就连接到了
+/// **旧版本的后端进程**，表现为「界面是新版，行为是旧版」——极难排查。
+#[cfg(windows)]
+fn find_pid_on_port(port: u16) -> Option<u32> {
+    let mut command = std::process::Command::new("netstat");
+    command.args(["-ano", "-p", "TCP"]);
+    apply_no_window(&mut command);
+    let output = command.output().ok()?;
+    let text = String::from_utf8_lossy(&output.stdout);
+    let needle = format!(":{}", port);
+
+    for line in text.lines() {
+        let cols: Vec<&str> = line.split_whitespace().collect();
+        if cols.len() < 5 {
+            continue;
+        }
+        // Proto 本地地址 外部地址 状态 PID
+        if !cols[0].eq_ignore_ascii_case("TCP") || !cols[1].ends_with(&needle) {
+            continue;
+        }
+        if !cols[3].eq_ignore_ascii_case("LISTENING") {
+            continue;
+        }
+        if let Ok(pid) = cols[4].parse::<u32>() {
+            return Some(pid);
+        }
+    }
+    None
+}
+
+#[cfg(not(windows))]
+fn find_pid_on_port(port: u16) -> Option<u32> {
+    let output = std::process::Command::new("lsof")
+        .args(["-t", &format!("-i:{}", port)])
+        .output()
+        .ok()?;
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .next()?
+        .trim()
+        .parse::<u32>()
+        .ok()
+}
+
+#[cfg(windows)]
+fn terminate_pid(pid: u32) -> bool {
+    let mut command = std::process::Command::new("taskkill");
+    command.args(["/F", "/PID", &pid.to_string()]);
+    apply_no_window(&mut command);
+    command.status().map(|s| s.success()).unwrap_or(false)
+}
+
+#[cfg(not(windows))]
+fn terminate_pid(pid: u32) -> bool {
+    std::process::Command::new("kill")
+        .args(["-9", &pid.to_string()])
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
+/// 探测指定端口上的后端并返回 `/health` 内容（不可达时返回 None）。
+async fn probe_health(port: u16) -> Option<serde_json::Value> {
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_millis(1500))
+        .build()
+        .ok()?;
+    let resp = client
+        .get(format!("http://127.0.0.1:{}/health", port))
+        .send()
+        .await
+        .ok()?;
+    if !resp.status().is_success() {
+        return None;
+    }
+    resp.json::<serde_json::Value>().await.ok()
+}
+
+fn health_version(health: &serde_json::Value) -> &str {
+    health.get("app_version").and_then(|v| v.as_str()).unwrap_or("")
+}
+
+/// 确保端口上没有「旧版本残留」的后端。
+///
+/// 返回 Ok(Some(())) 表示已有一个**版本一致**的后端在跑，可直接复用；
+/// Ok(None) 表示端口干净，可以启动新进程。
+async fn clear_stale_backend(port: u16) -> Result<Option<()>, String> {
+    let expected = env!("CARGO_PKG_VERSION");
+    let Some(health) = probe_health(port).await else {
+        return Ok(None);
+    };
+
+    let running = health_version(&health).to_string();
+    if running == expected {
+        return Ok(Some(()));
+    }
+
+    // 端口被旧版本（或无法识别版本的旧后端）占着 —— 必须清掉
+    let Some(pid) = find_pid_on_port(port) else {
+        return Err(format!(
+            "端口 {} 已被其他程序占用（无法确定进程号），请关闭占用该端口的程序后重试",
+            port
+        ));
+    };
+
+    let _ = terminate_pid(pid);
+    for _ in 0..24 {
+        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+        if probe_health(port).await.is_none() {
+            return Ok(None);
+        }
+    }
+
+    Err(format!(
+        "端口 {} 被一个旧版本后端占用（正在运行 {}，当前 {}，PID {}），无法自动结束。\n\
+         请在任务管理器中结束该进程后重启本应用。",
+        port,
+        if running.is_empty() { "未知版本" } else { &running },
+        expected,
+        pid
+    ))
+}
+
 /// 启动 Python 后端（使用指定 conda 环境中的 Python）
 #[tauri::command]
 pub async fn start_backend(
@@ -545,10 +671,17 @@ pub async fn start_backend(
     // 升级后它仍指向同一个 backend_runtime，但里面的代码需要重新同步。
     let app_dir = ensure_runtime(&app).unwrap_or(app_dir);
 
+    // 端口上若趴着旧版本后端（主程序被强杀留下的孤儿），必须先清掉，
+    // 否则新进程抢不到端口，前端会静默连上旧代码。
+    if clear_stale_backend(port).await?.is_some() {
+        return Ok(());
+    }
+
     // 把 Python 的 stdout/stderr 重定向到临时日志文件，方便诊断
     let log_path = std::env::temp_dir().join("easy_infer_backend.log");
 
-    // 第一阶段：在锁内生成进程（不跨 await，避免 MutexGuard: !Send 问题）
+    // 第一阶段：在同步块内生成进程。
+    // MutexGuard 是 !Send，必须严格限制在块内，不能跨越后面的 await。
     {
         let mut guard = state.0.lock().map_err(|e| e.to_string())?;
 
@@ -566,6 +699,8 @@ pub async fn start_backend(
             .env("PORT", port.to_string())
             .env("PYTHONUNBUFFERED", "1")
             .env("PYTHONIOENCODING", "utf-8")
+            // 让后端在 /health 里自报版本，客户端才能识别「连的是不是旧代码」
+            .env("EIS_APP_VERSION", env!("CARGO_PKG_VERSION"))
             .current_dir(&app_dir)
             .stdout(log_file)
             .stderr(log_clone);
@@ -576,26 +711,64 @@ pub async fn start_backend(
             .map_err(|e| format!("启动 Python 失败（python={}, dir={}）: {}", python_exe, app_dir, e))?;
 
         *guard = Some(child);
-    } // 锁在这里释放，之后可以安全 await
+    }
 
     // 第二阶段：等 1 秒后检查进程是否立即退出
     tokio::time::sleep(std::time::Duration::from_secs(1)).await;
 
-    let mut guard = state.0.lock().map_err(|e| e.to_string())?;
-    if let Some(ref mut child) = *guard {
-        if let Ok(Some(status)) = child.try_wait() {
-            *guard = None;
-            let log = std::fs::read(&log_path)
-                .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
-                .unwrap_or_default();
-            return Err(format!(
-                "Python 进程启动后立即退出（exit code: {:?}）\n\n输出:\n{}",
-                status.code(),
-                if log.is_empty() { "（无输出，可能是 DLL 缺失或路径错误）".to_string() } else { log }
-            ));
+    // 同样在同步块内取出结果，避免把 guard 带过 await
+    let early_exit = {
+        let mut guard = state.0.lock().map_err(|e| e.to_string())?;
+        let status = match guard.as_mut() {
+            Some(child) => child.try_wait().ok().flatten(),
+            None => None,
+        };
+        match status {
+            Some(status) => {
+                *guard = None;
+                let log = std::fs::read(&log_path)
+                    .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
+                    .unwrap_or_default();
+                Some(format!(
+                    "Python 进程启动后立即退出（exit code: {:?}）\n\n输出:\n{}",
+                    status.code(),
+                    if log.is_empty() {
+                        "（无输出，可能是 DLL 缺失或路径错误）".to_string()
+                    } else {
+                        log
+                    }
+                ))
+            }
+            None => None,
         }
+    };
+    if let Some(message) = early_exit {
+        return Err(message);
     }
 
+    // 第三阶段：短暂等待健康检查，确认应答的确实是**本次新启的**后端。
+    // 端口若仍被别的进程抢去，这里会给出明确的「版本不一致」提示，
+    // 而不是让界面连着旧代码继续跑。
+    let expected = env!("CARGO_PKG_VERSION");
+    for _ in 0..20 {
+        if let Some(health) = probe_health(port).await {
+            let running = health_version(&health);
+            if running == expected {
+                return Ok(());
+            }
+            if !running.is_empty() {
+                // 刚启动的进程不会报出别的版本号，说明端口被别人占了
+                return Err(format!(
+                    "后端端口 {} 返回的版本是 {}，与当前应用 {} 不一致。\n\
+                     可能有一个旧版本后端仍在运行，请结束它后重启本应用。",
+                    port, running, expected
+                ));
+            }
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+    }
+
+    // 健康检查迟迟不通也不报错：CUDA 初始化本来就慢，交给前端继续轮询
     Ok(())
 }
 

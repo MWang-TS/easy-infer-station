@@ -272,11 +272,40 @@ def filter_by_labels(result, selected_labels) -> None:
             continue
 
     if masks is not None and box_mask is not None:
-        try:
-            data = getattr(masks, "data", None)
-            # 长度不一致说明上游已经错位，此时宁可不动也不要进一步破坏
-            if data is not None and len(data) == len(box_mask) and not bool(box_mask.all()):
+        data = getattr(masks, "data", None)
+        # 长度不一致说明上游已经错位，此时宁可不动也不要进一步破坏
+        if data is not None and len(data) == len(box_mask) and not bool(box_mask.all()):
+            try:
                 result.masks = masks[box_mask]
+            except Exception:
+                # 裁剪失败就丢掉掩膜：没有掩膜叠加只是少画点东西，
+                # 但残留的错位 masks 会让 result.plot() 直接抛错、整张图失败。
+                result.masks = None
+
+    ensure_mask_alignment(result)
+
+
+def ensure_mask_alignment(result) -> None:
+    """保扤 `masks` 与 `boxes` 数量一致，否则 `result.plot()` 会崩。
+
+    ultralytics 的 `plot()` 会把掩膜与置信度按位置配对，两者长度不等就抛
+    `RuntimeError: The size of tensor a (N) must match the size of tensor b (M)`。
+    这里作为最后一道防线：宁可丢掉掩膜，也不能让整张图报错。
+    """
+    masks = getattr(result, "masks", None)
+    if masks is None:
+        return
+    try:
+        boxes = getattr(result, "boxes", None)
+        n_boxes = 0 if boxes is None else len(boxes)
+        data = getattr(masks, "data", None)
+        # 注意：不能写 `data or []`，张量的布尔求值会抛异常并被这里吞掉
+        n_masks = 0 if data is None else len(data)
+    except Exception:
+        return
+    if n_boxes != n_masks:
+        try:
+            result.masks = None
         except Exception:
             pass
 

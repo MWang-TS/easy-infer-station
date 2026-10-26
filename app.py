@@ -37,6 +37,9 @@ from routes import main_bp
 # 创建Flask应用实例
 app = Flask(__name__)
 
+# 应用版本：由 Tauri 启动时注入（直接跑 app.py 调试时为空）
+APP_VERSION = os.environ.get('EIS_APP_VERSION', '').strip()
+
 # 配置应用
 app.config.from_object(Config)
 
@@ -64,10 +67,16 @@ register_socketio_events(socketio)
 
 @app.route('/health')
 def health_check():
-    """健康检查"""
+    """健康检查
+
+    `app_version` 由 Tauri 启动时通过 EIS_APP_VERSION 环境变量注入。
+    客户端靠它识别「端口上应答的是不是旧版本残留的后端」，
+    否则主程序被强杀后孤儿进程会让新版本静默跑旧代码。
+    """
     return {
         'status': 'ok', 
         'message': 'Easy Infer Station is running',
+        'app_version': APP_VERSION,
         'cuda_available': CUDA_AVAILABLE,
         'gpu_count': GPU_COUNT,
         'gpu_names': GPU_NAMES
