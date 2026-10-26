@@ -1,5 +1,26 @@
 # 更新日志
 
+## 2026-10-26 - v0.1.1 修复升级后模型下载不可用
+
+### 修复问题
+- 🐛 修复从旧版本升级到 0.1.0 后，模型下载面板报
+  `Unexpected token '<', "<!doctype "... is not valid JSON`、下载源列表为空的问题
+
+### 根因
+安装包内的后端源码需要先同步到 `%LOCALAPPDATA%\com.easyolo.infer-station\backend_runtime`
+再启动。该同步只写在 `get_app_dir` 命令里，而这个命令**只有配置向导会调用**。
+升级用户的配置已持久化（`config.appDir` 存在 localStorage），向导不再出现，
+于是同步永不执行，后端一直跑上一版本的 `routes/services`：
+新接口 `/api/models/presets` 不存在 → Flask 返回 404 HTML → 前端 JSON 解析失败。
+
+### 改动
+- 🔄 后端目录同步改为在应用启动时（Rust `setup`）**无条件执行**，不再依赖前端调用
+- 🔄 `start_backend` 忽略前端传来的过期路径，始终使用同步后的运行目录
+- 🔄 新增 `.runtime-version` 版本标记：版本变化时清理上一版本遗留的 `.py` / `__pycache__`，
+  避免旧模块遮蔽新代码（`models`、`results`、`uploads`、告警图片等用户数据不受影响）
+- 🔄 资源目录不再硬编码 `_up_`，改为按候选顺序探测，找不到 `app.py` 时直接报错而不是静默跑旧代码
+- 🔄 启动前由前端刷新一次后端目录；下载面板对非 JSON 响应给出可读提示
+
 ## 2026-10-27 - v0.1.0 模型下载源可选（国内加速）
 
 ### 新增功能

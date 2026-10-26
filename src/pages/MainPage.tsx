@@ -38,6 +38,7 @@ import {
   checkBackendAlive,
   getBackendLog,
   getBackendClientConfig,
+  getAppDir,
   browseFile,
   browseModelFile,
   browseMultipleImageFiles,
@@ -2024,9 +2025,22 @@ export default function MainPage() {
       setBackendStatus("starting");
       addInferLog(`正在启动 Python 后端 (${config.conda.envName})...`);
 
+      // 每次启动都向 Rust 重新确认后端目录：安装包升级后资源要被重新同步，
+      // 而 config.appDir 是从上一版本持久化下来的，可能指向未更新的旧目录。
+      let appDir = config.appDir;
+      try {
+        const fresh = await getAppDir();
+        if (fresh && fresh !== appDir) {
+          appDir = fresh;
+          addInferLog(`后端目录已更新: ${fresh}`);
+        }
+      } catch (e) {
+        addInferLog(`获取后端目录失败，沿用已保存路径: ${e}`);
+      }
+
       let clientApiToken = "";
       try {
-        const clientConfig = await getBackendClientConfig(config.appDir);
+        const clientConfig = await getBackendClientConfig(appDir);
         clientApiToken = clientConfig.api_token.trim();
         apiTokenRef.current = clientApiToken;
         setApiToken(clientApiToken);
@@ -2037,9 +2051,9 @@ export default function MainPage() {
       }
 
       try {
-        await startBackend(config.conda.pythonExe, config.appDir, config.port);
+        await startBackend(config.conda.pythonExe, appDir, config.port);
         addInferLog(`Python 进程已启动: ${config.conda.pythonExe}`);
-        addInferLog(`工作目录: ${config.appDir}`);
+        addInferLog(`工作目录: ${appDir}`);
       } catch (e) {
         const errMsg = String(e);
         if (errMsg.includes("后端已在运行")) {

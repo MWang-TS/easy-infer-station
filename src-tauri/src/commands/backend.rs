@@ -121,23 +121,122 @@ fn copy_dir_all(src: &std::path::Path, dst: &std::path::Path) -> Result<(), Stri
     Ok(())
 }
 
+/// 安装包内嵌的后端源码（与 tauri.conf.json 的 bundle.resources 保持一致）
 #[cfg(not(debug_assertions))]
-fn sync_backend_runtime_dir(resource_dir: &std::path::Path, runtime_dir: &std::path::Path) -> Result<(), String> {
-    let resource_names = [
-        "app.py",
-        "config.py",
-        "requirements.txt",
-        ".env.example",
-        "routes",
-        "services",
-        "static",
-        "models",
+const MANAGED_RESOURCES: [&str; 8] = [
+    "app.py",
+    "config.py",
+    "requirements.txt",
+    ".env.example",
+    "routes",
+    "services",
+    "static",
+    "models",
+];
+
+/// 只由安装包管理的代码目录（其中的陈旧 .py / __pycache__ 可以安全清除）
+#[cfg(not(debug_assertions))]
+const CODE_DIRS: [&str; 2] = ["routes", "services"];
+
+/// 记录已同步到的版本。与当前版本不一致时，说明是升级后的首次启动，
+/// 必须清理旧版本的 Python 模块，否则 `import services.xxx` 会命中残留文件。
+#[cfg(not(debug_assertions))]
+const RUNTIME_MARKER: &str = ".runtime-version";
+
+#[cfg(not(debug_assertions))]
+fn read_marker(runtime_dir: &std::path::Path) -> String {
+    std::fs::read_to_string(runtime_dir.join(RUNTIME_MARKER))
+        .map(|value| value.trim().to_string())
+        .unwrap_or_default()
+}
+
+/// 找出 `_up_` 资源目录。Tauri 会把 `../xxx` 形式的资源放到 `resource_dir/_up_`，
+/// 不同版本 / 打包方式略有差异，所以按候选顺序探测而不是硬编码。
+#[cfg(not(debug_assertions))]
+fn resolve_resource_dir(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
+    let base = app
+        .path()
+        .resource_dir()
+        .map_err(|e| format!("找不到资源目录: {}", e))?;
+
+    let candidates = [
+        base.join("_up_"),
+        base.clone(),
+        base.join("resources"),
+        base.join("resources").join("_up_"),
     ];
 
+    for candidate in candidates {
+        // app.py 是后端入口，用它判断这个候选目录是不是真的资源根
+        if candidate.join("app.py").is_file() {
+            return Ok(candidate);
+        }
+    }
+
+    Err(format!(
+        "安装包资源不完整：在 {} 及 _up_ 下都没有找到 app.py（安装包可能损坏，请重新安装）",
+        base.display()
+    ))
+}
+
+/// 删除 `dst` 里在 `src` 中已不存在的 `.py` / `.pyc` / `__pycache__`。
+/// 升级后上游可能删除了模块或改了目录结构，残留文件会遮蔽新代码。
+#[cfg(not(debug_assertions))]
+fn prune_removed_modules(src: &std::path::Path, dst: &std::path::Path) -> Result<(), String> {
+    let entries = match std::fs::read_dir(dst) {
+        Ok(entries) => entries,
+        Err(_) => return Ok(()),
+    };
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let name = entry.file_name();
+        let counterpart = src.join(&name);
+
+        let file_type = match entry.file_type() {
+            Ok(file_type) => file_type,
+            Err(_) => continue,
+        };
+
+        if file_type.is_dir() {
+            if name == "__pycache__" {
+                let _ = std::fs::remove_dir_all(&path);
+            } else if counterpart.is_dir() {
+                prune_removed_modules(&counterpart, &path)?;
+            }
+            continue;
+        }
+
+        if counterpart.exists() {
+            continue;
+        }
+
+        let is_python = path
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .map(|ext| ext.eq_ignore_ascii_case("py") || ext.eq_ignore_ascii_case("pyc"))
+            .unwrap_or(false);
+        if is_python {
+            let _ = std::fs::remove_file(&path);
+        }
+    }
+
+    Ok(())
+}
+
+#[cfg(not(debug_assertions))]
+fn sync_backend_runtime_dir(
+    resource_dir: &std::path::Path,
+    runtime_dir: &std::path::Path,
+    version: &str,
+) -> Result<(), String> {
     std::fs::create_dir_all(runtime_dir)
         .map_err(|e| format!("创建运行目录失败 ({}): {}", runtime_dir.display(), e))?;
 
-    for name in resource_names {
+    // 版本标记不一致 = 升级后的首次启动（或首次运行，旧版本没写标记）
+    let stale = read_marker(runtime_dir) != version;
+
+    for name in MANAGED_RESOURCES {
         let src = resource_dir.join(name);
         if !src.exists() {
             continue;
@@ -151,7 +250,62 @@ fn sync_backend_runtime_dir(resource_dir: &std::path::Path, runtime_dir: &std::p
         }
     }
 
+    if stale {
+        for name in CODE_DIRS {
+            let src = resource_dir.join(name);
+            let dst = runtime_dir.join(name);
+            if dst.is_dir() {
+                prune_removed_modules(&src, &dst)?;
+            }
+        }
+        // 根目录 app.py / config.py 的字节码缓存
+        let _ = std::fs::remove_dir_all(runtime_dir.join("__pycache__"));
+
+        std::fs::write(runtime_dir.join(RUNTIME_MARKER), version)
+            .map_err(|e| format!("写入版本标记失败: {}", e))?;
+    }
+
+    // 兜底：同步后必须真的拿到后端入口，否则宁可报错也不要静默跑旧代码
+    if !runtime_dir.join("app.py").is_file() {
+        return Err(format!(
+            "后端运行目录缺少 app.py（{}）",
+            runtime_dir.display()
+        ));
+    }
+
     Ok(())
+}
+
+/// 确保 `backend_runtime` 与当前安装包一致，返回后端工作目录。
+///
+/// 关键点：这个函数必须**不依赖前端是否调用向导**。旧实现只在 `get_app_dir`
+/// （仅配置向导使用）里同步，升级用户的 `appDir` 又存在 localStorage 里，
+/// 因此向导不再出现 → 同步永不执行 → 继续用上一版本的 routes/services，
+/// 表现为新接口 404 / 返回 HTML 导致前端 JSON 解析报错。
+pub fn ensure_runtime(app: &tauri::AppHandle) -> Result<String, String> {
+    #[cfg(debug_assertions)]
+    {
+        let _ = app;
+        // 开发模式直接用项目根目录，改代码即时生效
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .ok_or_else(|| "找不到项目根目录".to_string())?;
+        return Ok(path.to_string_lossy().to_string());
+    }
+
+    #[cfg(not(debug_assertions))]
+    {
+        let resource_dir = resolve_resource_dir(app)?;
+        let runtime_dir = app
+            .path()
+            .app_local_data_dir()
+            .map_err(|e| format!("找不到本地数据目录: {}", e))?
+            .join("backend_runtime");
+
+        sync_backend_runtime_dir(&resource_dir, &runtime_dir, env!("CARGO_PKG_VERSION"))?;
+
+        Ok(runtime_dir.to_string_lossy().to_string())
+    }
 }
 
 /// 列出系统中所有的 conda 环境
@@ -382,10 +536,15 @@ pub async fn validate_conda_env(env_path: String) -> Result<CondaEnv, String> {
 #[tauri::command]
 pub async fn start_backend(
     state: State<'_, BackendState>,
+    app: tauri::AppHandle,
     python_exe: String,
     app_dir: String,
     port: u16,
 ) -> Result<(), String> {
+    // 不要盲信前端传来的 app_dir：老版本把路径存进了 localStorage，
+    // 升级后它仍指向同一个 backend_runtime，但里面的代码需要重新同步。
+    let app_dir = ensure_runtime(&app).unwrap_or(app_dir);
+
     // 把 Python 的 stdout/stderr 重定向到临时日志文件，方便诊断
     let log_path = std::env::temp_dir().join("easy_infer_backend.log");
 
@@ -588,37 +747,10 @@ pub async fn check_for_updates() -> Result<UpdateInfo, String> {
     })
 }
 
-/// 返回 app.py 所在目录
+/// 返回 app.py 所在目录（并确保它与当前安装包一致）
 /// - Debug 构建（tauri dev）：CARGO_MANIFEST_DIR 的父目录（即项目根目录）
-/// - Release 构建：可执行文件旁边的目录
+/// - Release 构建：`backend_runtime`（从安装包资源同步而来）
 #[tauri::command]
-pub fn get_app_dir(_app: tauri::AppHandle) -> Result<String, String> {
-    #[cfg(debug_assertions)]
-    {
-        // src-tauri/../  →  easy_infer_station/
-        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .parent()
-            .ok_or_else(|| "找不到项目根目录".to_string())?
-            .to_string_lossy()
-            .to_string();
-        return Ok(path);
-    }
-    #[cfg(not(debug_assertions))]
-    {
-        // Tauri 将 "../xxx" 相对路径的资源打包到 resource_dir/_up_/ 下
-        let resource_dir = _app
-            .path()
-            .resource_dir()
-            .map_err(|e| format!("找不到资源目录: {}", e))?
-            .join("_up_");
-        let runtime_dir = _app
-            .path()
-            .app_local_data_dir()
-            .map_err(|e| format!("找不到本地数据目录: {}", e))?
-            .join("backend_runtime");
-
-        sync_backend_runtime_dir(&resource_dir, &runtime_dir)?;
-
-        Ok(runtime_dir.to_string_lossy().to_string())
-    }
+pub fn get_app_dir(app: tauri::AppHandle) -> Result<String, String> {
+    ensure_runtime(&app)
 }

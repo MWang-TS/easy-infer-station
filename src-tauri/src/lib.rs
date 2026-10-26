@@ -13,6 +13,16 @@ pub fn run() {
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_store::Builder::default().build())
         .manage(BackendState(Mutex::new(None)))
+        .setup(|app| {
+            // 每次启动都把安装包内的后端源码同步到 backend_runtime。
+            // 这里必须无条件执行：不能只靠前端「配置向导」调用 get_app_dir，
+            // 否则升级后的用户（配置已持久化、向导不再出现）会继续跑旧版本代码，
+            // 表现为新接口 404 / 返回 HTML，前端 JSON 解析报错。
+            if let Err(err) = backend::ensure_runtime(app.handle()) {
+                eprintln!("[eis] 同步后端运行目录失败: {err}");
+            }
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             backend::list_conda_envs,
             backend::validate_conda_env,

@@ -20,6 +20,36 @@ import type { ModelPreset, ModelSource } from "@/lib/model-tasks";
 const SIZES = ["n", "s", "m"] as const;
 const SOURCE_KEY = "eis:model-source";
 
+/**
+ * 解析后端响应。
+ *
+ * Flask 对不存在的路由 / 未捕获异常返回的是 HTML 错误页，直接 `resp.json()` 会抛
+ * `Unexpected token '<', "<!doctype "... is not valid JSON` 这种完全看不懂的报错。
+ * 这种情形基本上只有一个原因：后端跑的还是旧版本代码（安装包升级后未同步）。
+ */
+async function readJson(resp: Response): Promise<any> {
+  const text = await resp.text();
+  const body = text.trim();
+  if (body.startsWith("{") || body.startsWith("[")) {
+    try {
+      return JSON.parse(body);
+    } catch {
+      // 下面统一报错
+    }
+  }
+  if (resp.status === 404) {
+    throw new Error(
+      "后端接口不存在，通常是升级后后端代码未同步：请完全退出并重新启动本应用后再试"
+    );
+  }
+  if (resp.status >= 500) {
+    throw new Error(
+      `后端处理失败（HTTP ${resp.status}），请查看应用日志；若刚升级过版本，请重启应用`
+    );
+  }
+  throw new Error(`后端返回了非 JSON 响应（HTTP ${resp.status}）`);
+}
+
 export default function ModelDownloader({
   open,
   port,
@@ -56,7 +86,7 @@ export default function ModelDownloader({
     setError(null);
     try {
       const resp = await fetch(`http://127.0.0.1:${port}/api/models/presets`);
-      const data = await resp.json();
+      const data = await readJson(resp);
       if (!data.success) throw new Error(data.message ?? "读取失败");
       setPresets(data.presets ?? []);
       setTasks(data.tasks ?? []);
@@ -121,7 +151,7 @@ export default function ModelDownloader({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ name: preset.name, source }),
       });
-      const data = await resp.json();
+      const data = await readJson(resp);
       if (!data.success) throw new Error(data.message ?? "下载失败");
       setNotice(`已下载 ${preset.name}`);
       setPresets((prev) =>

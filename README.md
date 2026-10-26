@@ -232,6 +232,13 @@ python -c "from ultralytics import YOLO; print('ultralytics OK')"
 **Q：如何确认是否在使用 GPU 推理？**  
 推理日志中会显示 `device: cuda:0`（GPU）或 `device: cpu`（CPU）。
 
+**Q：升级后「下载官方模型」报 `Unexpected token '<'`、下载源列表为空？**  
+这是 v0.1.0 的已知问题，v0.1.1 已修复。安装包内的后端源码要先同步到
+`%LOCALAPPDATA%\com.easyolo.infer-station\backend_runtime` 才能启动，而 v0.1.0
+只在配置向导里做同步 —— 升级用户的配置已保存、向导不再出现，于是后端仍在跑旧代码，
+新接口返回 404 HTML。升级到 v0.1.1 即可；临时也可手动删除该
+`backend_runtime` 目录后重启应用。
+
 **Q：批量推理中途想停止怎么办？**  
 点击"停止"按钮，后端收到信号后结束当前张处理并停止，已完成的结果仍保留在画廊中。
 
